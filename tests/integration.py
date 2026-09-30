@@ -122,7 +122,13 @@ class TerminalSession:
     def finish(self, key: str = "q") -> None:
         os.write(self.master, key.encode())
         assert self.process.wait(timeout=5) == 0
-        assert termios.tcgetattr(self.slave) == self.original, "Terminal settings were not restored"
+        self.assert_restored()
+
+    def assert_restored(self) -> None:
+        restored = termios.tcgetattr(self.slave)
+        assert restored == self.original, (
+            f"Terminal settings were not restored: expected={self.original!r}; actual={restored!r}"
+        )
 
     def close(self) -> None:
         if self.process.poll() is None:
@@ -244,7 +250,7 @@ def tui_checks(binary: str, root: Path, evidence: Path) -> None:
     with terminal(binary, data) as session:
         os.kill(session.process.pid, signal.SIGTERM)
         session.process.wait(timeout=5)
-        assert termios.tcgetattr(session.slave) == session.original
+        session.assert_restored()
 
     print("PASS: real PTY create/edit/priority/search/mouse/complete/reopen/delete/resize/cleanup")
 
