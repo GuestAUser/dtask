@@ -1,0 +1,15 @@
+{
+  "name": "Ember",
+  "background": "#17110F",
+  "panel": "#241A16",
+  "foreground": "#F2E6DA",
+  "muted": "#AD9585",
+  "accent": "#FFAE70",
+  "selected": "#493024",
+  "border": "#513A2E",
+  "urgent": "#FF746C",
+  "high": "#FFC06B",
+  "normal": "#FFAE70",
+  "low": "#AD9585",
+  "success": "#A4D48A"
+}

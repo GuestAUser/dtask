@@ -1,0 +1,36 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  posix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-latest
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build and exercise the CLI and real terminal
+        run: |
+          make test DC=ldc2
+          ./bin/dtask --version
+      - name: Build with DUB
+        run: |
+          dub build --compiler=ldc2 --build=release
+          ./bin/dtask --version
+      - name: Verify staged installation
+        run: |
+          make install DC=ldc2 PREFIX=/usr/local DESTDIR="${RUNNER_TEMP}/dtask-install"
+          "${RUNNER_TEMP}/dtask-install/usr/local/bin/dtask" --version

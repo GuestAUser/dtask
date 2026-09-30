@@ -1,0 +1,11 @@
+{
+    "name": "dtask",
+    "description": "A focused, keyboard and mouse driven POSIX task manager.",
+    "license": "MIT",
+    "homepage": "https://github.com/GuestAUser/dtask",
+    "targetType": "executable",
+    "targetPath": "bin",
+    "sourcePaths": ["source"],
+    "importPaths": ["source"],
+    "buildRequirements": ["disallowDeprecations"]
+}

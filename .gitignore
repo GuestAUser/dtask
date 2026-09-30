@@ -1,0 +1,7 @@
+/bin/
+/.dub/
+/dub.selections.json
+__pycache__/
+*.o
+*.obj
+*.exe

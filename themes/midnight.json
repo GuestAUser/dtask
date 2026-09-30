@@ -1,0 +1,15 @@
+{
+  "name": "Midnight",
+  "background": "#0D1117",
+  "panel": "#161B22",
+  "foreground": "#E6EDF3",
+  "muted": "#8B949E",
+  "accent": "#79C0FF",
+  "selected": "#22334A",
+  "border": "#30363D",
+  "urgent": "#FF7B72",
+  "high": "#FFA657",
+  "normal": "#79C0FF",
+  "low": "#8B949E",
+  "success": "#7EE787"
+}
