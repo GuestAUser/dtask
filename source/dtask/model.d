@@ -24,15 +24,17 @@ import std.process : environment;
 import std.string : strip, toLower, toStringz, fromStringz;
 import std.utf : validate;
 
-// flock locks the open file description, so even two stores in one process
-// cannot accidentally become concurrent writers. The lock file is never removed.
+/*
+ * flock locks the open file description, so even two stores in one process
+ * cannot accidentally become concurrent writers. The lock file is never removed.
+ */
 private extern(C) int flock(int fd, int operation) nothrow @nogc;
 private enum lockExclusive = 2;
 private enum lockNonblocking = 4;
 
-// ---- Task values, civil dates, and priorities --------------------------------
+/* ---- Task values, civil dates, and priorities -------------------------------- */
 
-/// Persisted urgency levels; larger values sort ahead of smaller values.
+/** Persisted urgency levels; larger values sort ahead of smaller values. */
 enum Priority : int
 {
     low = 1,
@@ -41,22 +43,22 @@ enum Priority : int
     urgent = 4
 }
 
-/// A stored task value. TaskStore validates text, IDs and civil dates before writing.
+/** A stored task value. TaskStore validates text, IDs and civil dates before writing. */
 struct Task
 {
-    /// Positive identifier, unique within the store and stable while the task exists.
+    /** Positive identifier, unique within the store and stable while the task exists. */
     ulong id;
-    /// Nonblank UTF-8 title without control characters; store mutations trim its edges.
+    /** Nonblank UTF-8 title without control characters; store mutations trim its edges. */
     string title;
-    /// UTF-8 notes; tabs and newlines are allowed, other control characters are not.
+    /** UTF-8 notes; tabs and newlines are allowed, other control characters are not. */
     string notes;
-    /// One of the four persisted urgency levels.
+    /** One of the four persisted urgency levels. */
     Priority priority;
-    /// Canonical YYYY-MM-DD date in years 0001-9999, or empty for unscheduled work.
+    /** Canonical YYYY-MM-DD date in years 0001-9999, or empty for unscheduled work. */
     string due;
-    /// Whether the task is complete; completion does not discard its due date.
+    /** Whether the task is complete; completion does not discard its due date. */
     bool completed;
-    /// Local civil date of creation, preserved by updates as YYYY-MM-DD.
+    /** Local civil date of creation, preserved by updates as YYYY-MM-DD. */
     string created;
 }
 
@@ -83,13 +85,13 @@ private string dateISO(Date date)
     return format("%04d-%02d-%02d", date.year, date.month, date.day);
 }
 
-/// Return the current local civil date as YYYY-MM-DD (years 0001-9999).
+/** Return the current local civil date as YYYY-MM-DD (years 0001-9999). */
 string todayISO()
 {
     return dateISO((cast(Date) Clock.currTime()));
 }
 
-/// Resolve due-date input relative to today's local civil date; see the explicit-date overload.
+/** Resolve due-date input relative to today's local civil date; see the explicit-date overload. */
 string normalizeDue(string input)
 {
     return normalizeDue(input, todayISO());
@@ -156,8 +158,10 @@ string normalizeDue(string input, string referenceDate)
         foreach (c; digits)
             enforce(c >= '0' && c <= '9', "Relative date must use +Nd or in N days.");
 
-        // Check before multiplying so even an arbitrarily long number cannot
-        // overflow or wrap into a valid date. The final cast is range checked.
+        /*
+         * Check before multiplying so even an arbitrarily long number cannot
+         * overflow or wrap into a valid date. The final cast is range checked.
+         */
         ulong count;
 
         foreach (c; digits)
@@ -190,7 +194,7 @@ string normalizeDue(string input, string referenceDate)
         if (target < 0)
             return dateISO(parseDate(value));
 
-        // Both bare weekdays and "next weekday" mean strictly in the future.
+        /* Both bare weekdays and "next weekday" mean strictly in the future. */
         days = (target - weekday + 7) % 7;
 
         if (days == 0)
@@ -205,8 +209,10 @@ string normalizeDue(string input, string referenceDate)
     return dateISO(date);
 }
 
-/// Return civil days from today to a canonical due date; overdue dates are negative.
-/// Empty input returns int.max. Invalid nonempty dates throw an Exception.
+/**
+ * Return civil days from today to a canonical due date; overdue dates are negative.
+ * Empty input returns int.max. Invalid nonempty dates throw an Exception.
+ */
 int daysUntil(string due)
 {
     if (due.length == 0)
@@ -215,7 +221,7 @@ int daysUntil(string due)
     return cast(int) (parseDate(due) - (cast(Date) Clock.currTime())).total!"days";
 }
 
-/// Return the lowercase storage/UI label; throw an Exception for an invalid enum value.
+/** Return the lowercase storage/UI label; throw an Exception for an invalid enum value. */
 string priorityLabel(Priority priority)
 {
     switch (priority)
@@ -228,7 +234,7 @@ string priorityLabel(Priority priority)
     }
 }
 
-/// Parse a trimmed, case-insensitive priority name or digit 1-4; throw on other input.
+/** Parse a trimmed, case-insensitive priority name or digit 1-4; throw on other input. */
 Priority parsePriority(string input)
 {
     switch (toLower(strip(input)))
@@ -241,7 +247,7 @@ Priority parsePriority(string input)
     }
 }
 
-/// Match a trimmed, case-insensitive substring in title or notes; empty queries match all.
+/** Match a trimmed, case-insensitive substring in title or notes; empty queries match all. */
 bool matchesTask(const Task task, string query)
 {
     auto needle = toLower(strip(query));
@@ -277,14 +283,14 @@ size_t[] sortedIndices(const(Task)[] tasks, string filter, string query)
         if (filter == "done" && !task.completed)
             continue;
 
-        // Today includes overdue work, but excludes completed and undated tasks.
+        /* Today includes overdue work, but excludes completed and undated tasks. */
         if (filter == "today" && (task.completed || task.due.length == 0 || task.due > today))
             continue;
 
         indices ~= i;
     }
 
-    // Lexicographic rank: (done, not-overdue, -priority, due-or-infinity, id).
+    /* Lexicographic rank: (done, not-overdue, -priority, due-or-infinity, id). */
     sort!((a, b) {
         const left = tasks[a];
         const right = tasks[b];
@@ -318,14 +324,16 @@ size_t[] sortedIndices(const(Task)[] tasks, string filter, string query)
     return indices;
 }
 
-/// Resolve tasks.json under absolute XDG_DATA_HOME, or HOME/.local/share.
-/// Relative XDG values are ignored; a required missing/relative HOME throws.
-/// Does not create directories or access task storage.
+/**
+ * Resolve tasks.json under absolute XDG_DATA_HOME, or HOME/.local/share.
+ * Relative XDG values are ignored; a required missing/relative HOME throws.
+ * Does not create directories or access task storage.
+ */
 string defaultDataPath()
 {
     auto root = environment.get("XDG_DATA_HOME", "");
 
-    // XDG specifies absolute paths. Relative values are treated as unset.
+    /* XDG specifies absolute paths. Relative values are treated as unset. */
     if (root.length == 0 || !isAbsolute(root))
     {
         auto home = environment.get("HOME", "");
@@ -336,9 +344,11 @@ string defaultDataPath()
     return buildPath(root, "dtask", "tasks.json");
 }
 
-// ---- Strict storage schema ---------------------------------------------------
-// Version 1: {"version": 1, "tasks": [{id,title,notes,priority,due,completed,created}]}.
-// Dates on disk are canonical ISO dates; relative dates are input syntax only.
+/*
+ * ---- Strict storage schema ---------------------------------------------------
+ * Version 1: {"version": 1, "tasks": [{id,title,notes,priority,due,completed,created}]}.
+ * Dates on disk are canonical ISO dates; relative dates are input syntax only.
+ */
 
 private void validateText(string text, bool multiline)
 {
@@ -453,14 +463,16 @@ private string encodeTasks(const(Task)[] tasks)
     return JSONValue(["version": JSONValue(1), "tasks": JSONValue(values)]).toPrettyString() ~ "\n";
 }
 
-// ---- POSIX ownership and atomic persistence ----------------------------------
+/* ---- POSIX ownership and atomic persistence ---------------------------------- */
 
-// Use the native open flags even where this druntime omits their declarations.
-// These ABI constants come from FreeBSD 14's sys/sys/fcntl.h and Darwin's
-// bsd/sys/fcntl.h. Keep both atomic close-on-exec and kernel symlink rejection.
+/*
+ * Use the native open flags even where this druntime omits their declarations.
+ * These ABI constants come from FreeBSD 14's sys/sys/fcntl.h and Darwin's
+ * bsd/sys/fcntl.h. Keep both atomic close-on-exec and kernel symlink rejection.
+ */
 version (FreeBSD)
 {
-    // LDC 1.43's druntime has no core.sys.freebsd.sys.fcntl module.
+    /* LDC 1.43's druntime has no core.sys.freebsd.sys.fcntl module. */
     private enum O_NOFOLLOW = 0x0100;
     private enum closeOnExecFlag = 0x00100000;
 }
@@ -563,10 +575,12 @@ private string readStorage(string path, out bool present)
  */
 final class TaskStore
 {
-    /// Current in-memory values. Direct edits are not automatically persisted;
-    /// use the mutation methods, which validate the complete candidate collection.
+    /**
+     * Current in-memory values. Direct edits are not automatically persisted;
+     * use the mutation methods, which validate the complete candidate collection.
+     */
     public Task[] tasks;
-    /// Resolved storage path. Changing it while open makes load/mutations fail.
+    /** Resolved storage path. Changing it while open makes load/mutations fail. */
     public string path;
 
     private int lockFD = -1;
@@ -576,9 +590,11 @@ final class TaskStore
     private bool hadFile;
     private ulong temporaryCounter;
 
-    /// Create missing parent directories with mode 0700, acquire the 0600 lock,
-    /// and load the store. Existing parent permissions are preserved.
-    /// Throws on invalid paths, unsafe files, lock contention, or invalid storage.
+    /**
+     * Create missing parent directories with mode 0700, acquire the 0600 lock,
+     * and load the store. Existing parent permissions are preserved.
+     * Throws on invalid paths, unsafe files, lock contention, or invalid storage.
+     */
     this(string path)
     {
         enforce(path.length != 0 && !canFind(path, '\0'), "Invalid task storage path.");
@@ -608,8 +624,10 @@ final class TaskStore
         close();
     }
 
-    /// Release the writer lock without saving direct edits. Safe to call repeatedly;
-    /// subsequent loads and mutations fail and a new instance is needed to reopen.
+    /**
+     * Release the writer lock without saving direct edits. Safe to call repeatedly;
+     * subsequent loads and mutations fail and a new instance is needed to reopen.
+     */
     void close() nothrow
     {
         if (lockFD >= 0)
@@ -627,8 +645,10 @@ final class TaskStore
         enforce(path == lockedPath, "Cannot change the path of an open task store.");
     }
 
-    /// Replace tasks from validated version-1 JSON; a missing file yields no tasks.
-    /// On failure, retain the previous tasks but block mutations until a successful load.
+    /**
+     * Replace tasks from validated version-1 JSON; a missing file yields no tasks.
+     * On failure, retain the previous tasks but block mutations until a successful load.
+     */
     void load()
     {
         requireOpen();
@@ -643,9 +663,11 @@ final class TaskStore
         loaded = true;
     }
 
-    /// Persist a new unfinished task and return one greater than the largest current ID.
-    /// Trim title, normalize due, and use today's creation date; invalid values or
-    /// exhausted IDs throw. Deleted IDs may be reused when they were the largest.
+    /**
+     * Persist a new unfinished task and return one greater than the largest current ID.
+     * Trim title, normalize due, and use today's creation date; invalid values or
+     * exhausted IDs throw. Deleted IDs may be reused when they were the largest.
+     */
     ulong add(string title, Priority priority, string due, string notes = "")
     {
         validateText(title, false);
@@ -666,8 +688,10 @@ final class TaskStore
         return id;
     }
 
-    /// Persist edited fields, trimming title and normalizing due while preserving
-    /// completion and creation date. Invalid values or an unknown ID throw.
+    /**
+     * Persist edited fields, trimming title and normalizing due while preserving
+     * completion and creation date. Invalid values or an unknown ID throw.
+     */
     void update(ulong id, string title, Priority priority, string due, string notes)
     {
         validateText(title, false);
@@ -680,7 +704,7 @@ final class TaskStore
         persist(candidate);
     }
 
-    /// Persist the inverse completion state of an existing ID; throw if it is absent.
+    /** Persist the inverse completion state of an existing ID; throw if it is absent. */
     void toggle(ulong id)
     {
         auto index = findTask(id);
@@ -689,7 +713,7 @@ final class TaskStore
         persist(candidate);
     }
 
-    /// Permanently persist removal of an existing ID; throw if it is absent.
+    /** Permanently persist removal of an existing ID; throw if it is absent. */
     void remove(ulong id)
     {
         auto index = findTask(id);
@@ -714,7 +738,7 @@ final class TaskStore
         enforce(loaded, "Load valid storage before making changes.");
         validateTasks(candidate);
 
-        // A noncooperating editor must not cause silent lost writes either.
+        /* A noncooperating editor must not cause silent lost writes either. */
         bool present;
         auto current = readStorage(lockedPath, present);
         enforce(present == hadFile && current == loadedBytes,
@@ -725,7 +749,7 @@ final class TaskStore
         scope (exit) closeFD(directoryFD);
         setCloseOnExec(directoryFD);
 
-        // Fail before changing anything on filesystems without directory syncing.
+        /* Fail before changing anything on filesystems without directory syncing. */
         errnoEnforce(fsync(directoryFD) == 0, "Cannot sync task directory");
         auto temporary = lockedPath ~ ".tmp." ~ to!string(getpid()) ~ "." ~ to!string(++temporaryCounter);
         auto fd = open(toStringz(temporary), O_RDWR | O_CREAT | O_EXCL | closeOnExecFlag | O_NOFOLLOW, octal!"600");

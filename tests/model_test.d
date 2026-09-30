@@ -20,7 +20,7 @@ import std.path : buildPath;
 import std.process : environment;
 import std.string : toStringz, fromStringz, replace;
 
-// Each test owns a unique directory. No fixture reads or writes the user's data.
+/* Each test owns a unique directory. No fixture reads or writes the user's data. */
 private class Sandbox
 {
     string directory;
@@ -60,7 +60,7 @@ private ulong[] orderedIDs(const(Task)[] tasks, string filter = "all", string qu
     return result;
 }
 
-// ---- Civil dates and priority parsing ----------------------------------------
+/* ---- Civil dates and priority parsing ---------------------------------------- */
 
 unittest
 {
@@ -83,7 +83,7 @@ unittest
     assertThrown!Exception(daysUntil("2023-02-29"));
 }
 
-// ---- Deterministic natural-date presets and calendar boundaries --------------
+/* ---- Deterministic natural-date presets and calendar boundaries -------------- */
 
 unittest
 {
@@ -99,8 +99,10 @@ unittest
     assert(normalizeDue(" YESTERDAY ", "2024-03-01") == "2024-02-29");
     assert(normalizeDue(" 2024-02-29 ", "2023-01-01") == "2024-02-29");
 
-    // Reference dates remain strict ISO civil dates, even for absolute dates
-    // and clears that do not otherwise need arithmetic.
+    /*
+     * Reference dates remain strict ISO civil dates, even for absolute dates
+     * and clears that do not otherwise need arithmetic.
+     */
     foreach (reference; ["", "today", " 2024-02-29 ", "2024-2-29", "0000-01-01",
         "1900-02-29", "2023-02-29", "2024-04-31", "2024-13-01", "10000-01-01"])
     {
@@ -111,7 +113,7 @@ unittest
 
 unittest
 {
-    // Sunday and Monday distinguish a future occurrence from this week.
+    /* Sunday and Monday distinguish a future occurrence from this week. */
     static immutable names = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
     static immutable fromSunday = ["2024-06-09", "2024-06-03", "2024-06-04", "2024-06-05",
         "2024-06-06", "2024-06-07", "2024-06-08"];
@@ -151,8 +153,10 @@ unittest
 
 unittest
 {
-    // Fixed results exercise month ends, leap rules, and year rollover without
-    // depending on the machine's clock, timezone, or daylight-saving changes.
+    /*
+     * Fixed results exercise month ends, leap rules, and year rollover without
+     * depending on the machine's clock, timezone, or daylight-saving changes.
+     */
     foreach (testCase; [
         ["tom", "2024-01-31", "2024-02-01"],
         ["tomorrow", "2024-02-28", "2024-02-29"],
@@ -216,8 +220,10 @@ unittest
 
 unittest
 {
-    // Bracket real-clock calls with civil dates so a midnight boundary is valid,
-    // not a flaky failure. The arithmetic itself is checked against Date.
+    /*
+     * Bracket real-clock calls with civil dates so a midnight boundary is valid,
+     * not a flaky failure. The arithmetic itself is checked against Date.
+     */
     foreach (input, offset; ["today": 0, "tomorrow": 1, "+0d": 0, "+17d": 17])
     {
         auto before = Date.fromISOExtString(todayISO());
@@ -251,7 +257,7 @@ unittest
     assertThrown!Exception(priorityLabel(cast(Priority) 5));
 }
 
-// ---- Filtering and the complete lexicographic rank ---------------------------
+/* ---- Filtering and the complete lexicographic rank --------------------------- */
 
 unittest
 {
@@ -289,7 +295,7 @@ unittest
     assert(orderedIDs([value], "today", "missing").length == 0);
 }
 
-// ---- Persistent mutations and private file permissions -----------------------
+/* ---- Persistent mutations and private file permissions ----------------------- */
 
 unittest
 {
@@ -398,7 +404,7 @@ unittest
     assert(store.tasks == snapshot);
 }
 
-// ---- Refuse malformed storage, never repair it by overwriting -----------------
+/* ---- Refuse malformed storage, never repair it by overwriting ----------------- */
 
 unittest
 {
@@ -445,7 +451,7 @@ unittest
         assert(cast(string) read(box.path) == bytes);
     }
 
-    // Constructor failures must release their advisory lock.
+    /* Constructor failures must release their advisory lock. */
     write(box.path, validStorage);
     auto store = new TaskStore(box.path);
     scope (exit) store.close();
@@ -471,8 +477,10 @@ unittest
     auto id = store.add("Original", Priority.normal, "");
     auto snapshot = store.tasks.dup;
 
-    // Simulate an editor that does not honor the lock. Every mutation must fail
-    // without changing either the caller's memory or the editor's new bytes.
+    /*
+     * Simulate an editor that does not honor the lock. Every mutation must fail
+     * without changing either the caller's memory or the editor's new bytes.
+     */
     write(box.path, validStorage);
     assertThrown!Exception(store.add("Lost write", Priority.normal, ""));
     assertThrown!Exception(store.update(id, "Lost write", Priority.high, "", ""));
@@ -496,7 +504,7 @@ unittest
     auto snapshot = store.tasks.dup;
     auto bytes = readText(box.path);
 
-    // O_EXCL must refuse a pre-existing temporary path, without truncating it.
+    /* O_EXCL must refuse a pre-existing temporary path, without truncating it. */
     auto collision = box.path ~ ".tmp." ~ to!string(getpid()) ~ ".2";
     write(collision, "Do not touch");
     assertThrown!Exception(store.toggle(id));
@@ -554,15 +562,17 @@ unittest
     assert(store.tasks[0].id == ulong.max && store.tasks[0].completed);
 }
 
-// ---- Lock exclusion across stores and actual processes -----------------------
+/* ---- Lock exclusion across stores and actual processes ----------------------- */
 
 unittest
 {
     auto box = new Sandbox;
     scope (exit) box.close();
 
-    // POSIX open chooses the lowest free descriptor. In this single-threaded
-    // test the store's lifetime lock must occupy the slot released by the probe.
+    /*
+     * POSIX open chooses the lowest free descriptor. In this single-threaded
+     * test the store's lifetime lock must occupy the slot released by the probe.
+     */
     auto descriptor = open("/dev/null", O_RDONLY);
     assert(descriptor >= 0);
     assert(closeFD(descriptor) == 0);
@@ -618,13 +628,15 @@ unittest
 
     if (child == 0)
     {
-        // Never unwind a child failure into the parent's inherited fixture
-        // teardown. The parent observes the nonzero exit through its pipe.
+        /*
+         * Never unwind a child failure into the parent's inherited fixture
+         * teardown. The parent observes the nonzero exit through its pipe.
+         */
         scope (exit) _exit(1);
 
         closeFD(commands[1]);
         closeFD(events[0]);
-        store.close(); // Drop the child's inherited reference, not the parent's.
+        store.close(); /* Drop the child's inherited reference, not the parent's. */
 
         assertThrown!Exception(new TaskStore(box.path));
         send(events[1], 'L');
@@ -661,7 +673,7 @@ unittest
     assert(finalStore.tasks[3].id == 4);
 }
 
-// ---- XDG resolution without modifying the real user environment --------------
+/* ---- XDG resolution without modifying the real user environment -------------- */
 
 unittest
 {

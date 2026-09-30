@@ -52,6 +52,8 @@ temporary captures are automatically removed after the tests finish.
 Use readable conditions, blank lines between logical steps, and explanatory
 comment blocks around algorithms and operating-system boundaries. Explain
 calendar arithmetic and ordering rules where they are implemented.
+Use Ddoc blocks (`/** ... */`) for public APIs and standard block comments
+(`/* ... */`) for implementation explanations and section headings.
 
 Keep tests separate from production modules. New behavior should have a
 regression test at its nearest useful boundary; terminal interactions also

@@ -11,8 +11,10 @@ import std.process : environment;
 import std.string : fromStringz, indexOf;
 import std.traits : FieldNameTuple;
 
-// Each file-based test owns a fresh directory, without timing assumptions or
-// shared filenames. Cleanup also runs when an assertion fails.
+/*
+ * Each file-based test owns a fresh directory, without timing assumptions or
+ * shared filenames. Cleanup also runs when an assertion fails.
+ */
 private string themeDirectory()
 {
     auto pattern = (buildPath(tempDir(), "dtask-theme-XXXXXX") ~ "\0").dup;
@@ -46,7 +48,7 @@ private void expectThemeFailure(string path, string contents, string field = "")
     }
 }
 
-// Built-in values and inheritance for every optional field.
+/* Built-in values and inheritance for every optional field. */
 unittest
 {
     auto theme = defaultTheme();
@@ -89,7 +91,7 @@ unittest
     }
 }
 
-// Both shipped themes are complete JSON examples consumed by the real loader.
+/* Both shipped themes are complete JSON examples consumed by the real loader. */
 unittest
 {
     foreach (filename; ["midnight.json", "ember.json"])
@@ -116,8 +118,10 @@ unittest
     assert(loadTheme(buildPath("themes", "ember.json")).background != defaultTheme().background);
 }
 
-// Malformed syntax, non-object roots, unknown keys and non-string fields must
-// fail at the configuration boundary, with the file and offending field known.
+/*
+ * Malformed syntax, non-object roots, unknown keys and non-string fields must
+ * fail at the configuration boundary, with the file and offending field known.
+ */
 unittest
 {
     auto directory = themeDirectory();
@@ -192,7 +196,7 @@ unittest
     }
 }
 
-// Exact SGR bytes are machine-consumed output, including decimal RGB channels.
+/* Exact SGR bytes are machine-consumed output, including decimal RGB channels. */
 unittest
 {
     assert(foreground("#000000") == "\x1b[38;2;0;0;0m");
@@ -204,7 +208,7 @@ unittest
     assert(reset == "\x1b[0m");
 }
 
-// Environment changes are process-local and restored even on assertion failure.
+/* Environment changes are process-local and restored even on assertion failure. */
 unittest
 {
     const originalConfig = environment.get("XDG_CONFIG_HOME");

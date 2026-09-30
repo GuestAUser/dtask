@@ -9,39 +9,41 @@ import std.process : environment;
 import std.traits : FieldNameTuple;
 import std.utf : validate;
 
-/// Rendering palette with #RRGGBB color strings and a free-form UTF-8 name.
-/// loadTheme validates colors and fills omitted fields from defaultTheme.
+/**
+ * Rendering palette with #RRGGBB color strings and a free-form UTF-8 name.
+ * loadTheme validates colors and fills omitted fields from defaultTheme.
+ */
 struct Theme
 {
-    /// Display name; render through fit like other externally supplied text.
+    /** Display name; render through fit like other externally supplied text. */
     string name;
-    /// Main workspace background.
+    /** Main workspace background. */
     string background;
-    /// Background of secondary surfaces such as schedule targets and calendar cells.
+    /** Background of secondary surfaces such as schedule targets and calendar cells. */
     string panel;
-    /// Primary task and editor text color.
+    /** Primary task and editor text color. */
     string foreground;
-    /// Secondary labels, hints and completed-task text color.
+    /** Secondary labels, hints and completed-task text color. */
     string muted;
-    /// Interactive controls and active-view highlights.
+    /** Interactive controls and active-view highlights. */
     string accent;
-    /// Background for selected rows, focused fields and highlighted drop targets.
+    /** Background for selected rows, focused fields and highlighted drop targets. */
     string selected;
-    /// Separator and divider color.
+    /** Separator and divider color. */
     string border;
-    /// Urgent priority, overdue dates and error messages.
+    /** Urgent priority, overdue dates and error messages. */
     string urgent;
-    /// High-priority task label color.
+    /** High-priority task label color. */
     string high;
-    /// Normal-priority task label color.
+    /** Normal-priority task label color. */
     string normal;
-    /// Low-priority task label color.
+    /** Low-priority task label color. */
     string low;
-    /// Positive feedback, selected options and today's calendar date.
+    /** Positive feedback, selected options and today's calendar date. */
     string success;
 }
 
-/// Return the complete built-in Midnight palette; Theme.init is not a usable palette.
+/** Return the complete built-in Midnight palette; Theme.init is not a usable palette. */
 Theme defaultTheme()
 {
     Theme theme;
@@ -63,9 +65,11 @@ Theme defaultTheme()
     return theme;
 }
 
-/// Load a flat JSON object whose keys are Theme fields and whose values are strings.
-/// Empty path returns defaultTheme; omitted keys inherit its values. Unknown keys,
-/// invalid colors, malformed UTF-8/JSON and read errors throw an Exception naming the file.
+/**
+ * Load a flat JSON object whose keys are Theme fields and whose values are strings.
+ * Empty path returns defaultTheme; omitted keys inherit its values. Unknown keys,
+ * invalid colors, malformed UTF-8/JSON and read errors throw an Exception naming the file.
+ */
 Theme loadTheme(string path)
 {
     auto theme = defaultTheme();
@@ -132,8 +136,10 @@ Theme loadTheme(string path)
     return theme;
 }
 
-// ANSI truecolor uses three byte values. For a hex pair ab, the byte is
-// 16 * value(a) + value(b); validation runs before any indexing or decoding.
+/*
+ * ANSI truecolor uses three byte values. For a hex pair ab, the byte is
+ * 16 * value(a) + value(b); validation runs before any indexing or decoding.
+ */
 private bool validColor(string hex)
 {
     if (hex.length != 7 || hex[0] != '#')
@@ -180,24 +186,26 @@ private string colorSequence(string hex, uint channel)
     return format("\x1b[%s;2;%s;%s;%sm", channel, red, green, blue);
 }
 
-/// Encode an ANSI truecolor foreground SGR sequence; throw unless hex is #RRGGBB.
+/** Encode an ANSI truecolor foreground SGR sequence; throw unless hex is #RRGGBB. */
 string foreground(string hex)
 {
     return colorSequence(hex, 38);
 }
 
-/// Encode an ANSI truecolor background SGR sequence; throw unless hex is #RRGGBB.
+/** Encode an ANSI truecolor background SGR sequence; throw unless hex is #RRGGBB. */
 string background(string hex)
 {
     return colorSequence(hex, 48);
 }
 
-/// ANSI SGR sequence restoring default colors and text attributes.
+/** ANSI SGR sequence restoring default colors and text attributes. */
 enum reset = "\x1b[0m";
 
-/// Resolve theme.json under absolute XDG_CONFIG_HOME, or HOME/.config.
-/// Relative XDG values are ignored; a required missing/relative HOME throws.
-/// Does not create directories or probe whether the optional file exists.
+/**
+ * Resolve theme.json under absolute XDG_CONFIG_HOME, or HOME/.config.
+ * Relative XDG values are ignored; a required missing/relative HOME throws.
+ * Does not create directories or probe whether the optional file exists.
+ */
 string defaultThemePath()
 {
     const configHome = environment.get("XDG_CONFIG_HOME", "");
