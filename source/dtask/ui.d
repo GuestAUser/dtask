@@ -213,7 +213,6 @@ private final class Workspace
 
         line(frame, 1, ink(theme.accent, fit("  dtask", columns - 26))
             ~ ink(theme.muted, fit(todayISO() ~ "  /  " ~ theme.name, 26)));
-        line(frame, 2, ink(theme.foreground, fit("  A little clarity. A next step.", columns)));
 
         size_t openCount;
         size_t completedCount;
