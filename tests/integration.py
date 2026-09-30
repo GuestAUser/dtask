@@ -561,6 +561,43 @@ def cursor_boundary_checks(binary: str, root: Path) -> None:
 
     print("PASS: vertical cursor movement stays on the requested soft-wrapped row")
 
+def caret_rendering_checks(binary: str, root: Path, evidence: Path) -> None:
+    data = root / "caret-rendering.json"
+    title = "Alpha中文Beta"
+
+    with terminal(binary, data, 48, 20) as session:
+        session.send("n")
+        session.type_text(title)
+        for _ in range(4):
+            frame = session.send("\x1b[D")
+        assert session.cell(title) == (13, 9)
+        assert b"\x1b[9;22H\x1b[?25h" in frame
+        evidence.joinpath("caret-title.ansi").write_bytes(frame)
+
+        session.click("[Edit description]")
+        session.send("\x1b[200~regression baselines\x1b[201~")
+        session.send("\x1b[<0;14;8M")
+        frame = session.send("\x1b[<0;14;8m")
+        assert session.cell("regression baselines") == (3, 8)
+        assert b"\x1b[8;14H\x1b[?25h" in frame
+        evidence.joinpath("caret-description.ansi").write_bytes(frame)
+        frame = session.click("[Save]")
+        assert b"\x1b[?25h" not in frame
+
+        session.send("/")
+        session.send("\x1b[200~" + title + "\x1b[201~")
+        for _ in range(4):
+            frame = session.send("\x1b[D")
+        assert session.cell(title) == (12, 6)
+        assert b"\x1b[6;21H\x1b[?25h" in frame
+        evidence.joinpath("caret-search.ansi").write_bytes(frame)
+        session.send("\x1b")
+        session.finish()
+
+    task = json.loads(command(binary, data, "list", "--json").stdout)[0]
+    assert task["title"] == title and task["notes"] == "regression baselines"
+    print("PASS: native edit cursor preserves text cells and Unicode positioning")
+
 def main() -> None:
     binary = str(Path(sys.argv[1]).resolve())
 
@@ -577,6 +614,7 @@ def main() -> None:
         calendar_checks(binary, root, evidence)
         description_checks(binary, root, evidence)
         cursor_boundary_checks(binary, root)
+        caret_rendering_checks(binary, root, evidence)
 
     print("PASS: all integration checks")
 

@@ -69,6 +69,8 @@ private final class Workspace
     int descriptionOffset;
     int draftOffset;
     bool followDraftCursor = true;
+    int caretX;
+    int caretY;
     ulong dragId;
     int pressX;
     int pressY;
@@ -189,6 +191,7 @@ private final class Workspace
     void render()
     {
         string frame = "\x1b[?25l";
+        caretY = 0;
 
         if (columns < 48 || rows < 20)
         {
@@ -250,8 +253,17 @@ private final class Workspace
                 active ? theme.accent : theme.muted, active ? theme.selected : theme.background);
         }
 
-        auto searchText = mode == Mode.search ? "  Search > " ~ editable(query, searchCursor, columns - 22)
-            : "  / Search: " ~ (query.length ? query : "all tasks");
+        string searchText;
+
+        if (mode == Mode.search)
+        {
+            int cursorColumn;
+            searchText = "  Search > " ~ editable(query, searchCursor, columns - 22, cursorColumn);
+            caretX = 12 + cursorColumn;
+            caretY = 6;
+        }
+        else
+            searchText = "  / Search: " ~ (query.length ? query : "all tasks");
         line(frame, 6, ink(mode == Mode.search ? theme.accent : theme.muted, fit(searchText, columns - 10)));
         at(frame, columns - 8, 6, "[Clear]", 7, theme.accent);
 
@@ -305,6 +317,10 @@ private final class Workspace
             : "  v: details | / search | ? help | q quit";
         line(frame, rows - 1, ink(theme.muted, fit(footer, columns), theme.panel));
         line(frame, rows, "");
+
+        if (caretY > 0)
+            frame ~= "\x1b[" ~ to!string(caretY) ~ ";" ~ to!string(caretX) ~ "H\x1b[?25h";
+
         terminal.write(frame ~ reset);
     }
 
@@ -440,10 +456,9 @@ private final class Workspace
                 if (index == cursorRow)
                 {
                     auto points = to!dstring(fields[3]);
-                    auto before = to!string(points[lines[index].start .. cursors[3]]);
-                    auto prefix = draftLines(before, body.width)[0].text;
-                    auto rendered = to!dstring(text);
-                    text = prefix ~ "|" ~ to!string(rendered[to!dstring(prefix).length .. $]);
+                    auto prefix = to!string(points[lines[index].start .. cursors[3]]);
+                    caretX = body.x + textWidth(prefix);
+                    caretY = body.y + row;
                 }
             }
 
@@ -535,11 +550,29 @@ private final class Workspace
         }
     }
 
-    string editable(string text, size_t cursor, int width)
+    /*
+     * Keep the insertion point and its character visible without placing a
+     * marker in the text. The terminal draws its own cursor over the cell.
+     */
+    string editable(string text, size_t cursor, int width, out int cursorColumn)
     {
         auto points = to!dstring(text);
-        auto start = cursor > cast(size_t) max(1, width - 4) ? cursor - max(1, width - 4) : 0;
-        return to!string(points[start .. cursor]) ~ "|" ~ to!string(points[cursor .. $]);
+        auto start = cursor;
+        auto reserved = cursor < points.length ? max(1, textWidth(to!string(points[cursor]))) : 1;
+        cursorColumn = 0;
+
+        while (start > 0)
+        {
+            auto cells = textWidth(to!string(points[start - 1]));
+
+            if (cursorColumn + cells > width - reserved)
+                break;
+
+            cursorColumn += cells;
+            --start;
+        }
+
+        return to!string(points[start .. $]);
     }
 
     void renderForm(ref string frame)
@@ -568,7 +601,16 @@ private final class Workspace
             else
             {
                 auto budget = width - (index == 2 ? 28 : 14);
-                auto text = active ? editable(fields[index], cursors[index], budget) : fields[index];
+                string text = fields[index];
+
+                if (active)
+                {
+                    int cursorColumn;
+                    text = editable(fields[index], cursors[index], budget, cursorColumn);
+                    caretX = 13 + cursorColumn;
+                    caretY = row;
+                }
+
                 at(frame, 13, row, text, budget, theme.foreground, surface);
 
                 if (index == 2)
