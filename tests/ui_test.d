@@ -2,6 +2,7 @@ module ui_test;
 
 import dtask.widgets;
 import std.datetime : Date;
+import dtask.text : textWidth;
 
 unittest
 {
@@ -15,8 +16,10 @@ unittest
 
 unittest
 {
-    // Every scheduling rectangle remains visible and disjoint at each layout
-    // boundary. Hit testing agrees with drawing for every cell, not just labels.
+    /*
+     * Every scheduling rectangle remains visible and disjoint at each layout
+     * boundary. Hit testing agrees with drawing for every cell, not just labels.
+     */
     foreach (size; [[48, 20], [60, 24], [80, 24], [109, 32], [110, 24], [120, 28], [120, 29], [120, 32], [120, 20]])
     {
         foreach (calendar; [false, true])
@@ -48,8 +51,10 @@ unittest
 
 unittest
 {
-    // Every day appears exactly once in the six-row grid, including February
-    // and months starting Sunday that need their sixth calendar row.
+    /*
+     * Every day appears exactly once in the six-row grid, including February
+     * and months starting Sunday that need their sixth calendar row.
+     */
     foreach (year; [1, 1900, 2000, 2024, 2026, 9999])
     {
         foreach (month; 1 .. 13)
@@ -95,4 +100,78 @@ unittest
     assert(adjacentMonth(Date(2024, 3, 31), -1) == Date(2024, 2, 1));
     assert(adjacentMonth(Date(1, 1, 1), -1) == Date(1, 1, 1));
     assert(adjacentMonth(Date(9999, 12, 1), 1) == Date(9999, 12, 1));
+}
+
+unittest
+{
+    foreach (size; [[48, 20], [60, 24], [80, 28], [109, 32], [110, 24], [120, 32]])
+    {
+        auto body = descriptionBody(size[0], size[1]);
+        assert(body.x == 3 && body.y == 8);
+        assert(body.width == size[0] - 4 && body.height >= 7);
+        assert(body.y + body.height == size[1] - 5);
+
+        foreach (count; [0, 1, 3, 12, 100])
+        {
+            auto height = taskListHeight(size[0], size[1], count);
+            assert(height >= 1);
+
+            foreach (index; 0 .. 6)
+            {
+                auto target = scheduleCell(size[0], size[1], index);
+                assert(wideSchedule(size[0], size[1]) || 8 + height <= target.y);
+            }
+        }
+    }
+
+    assert(taskListHeight(120, 32, 2) == 3);
+    assert(taskListHeight(120, 32, 100) == 11);
+    assert(taskListHeight(48, 20, 2) == 6);
+    assert(taskListHeight(120, 32, 0) == 20);
+}
+
+unittest
+{
+    auto lines = draftLines("abcd\n\nefghij\n", 4);
+    assert(lines == [DraftLine("abcd", 0, 4), DraftLine("", 5, 5),
+        DraftLine("efgh", 6, 10), DraftLine("ij", 10, 12), DraftLine("", 13, 13)]);
+    assert(draftCursorRow(lines, 4) == 0);
+    assert(draftCursorRow(lines, 5) == 1);
+    assert(draftCursorRow(lines, 10) == 3);
+    assert(draftCursorRow(lines, 13) == 4);
+    assert(draftLines("", 4) == [DraftLine("", 0, 0)]);
+}
+
+unittest
+{
+    auto text = "a\t星e\u0301図";
+    auto lines = draftLines(text, 7);
+    assert(lines == [DraftLine("a   星e\u0301", 0, 5), DraftLine("図", 5, 6)]);
+    assert(draftCursorAt(text, lines[0], 0) == 0);
+    assert(draftCursorAt(text, lines[0], 3) == 1);
+    assert(draftCursorAt(text, lines[0], 4) == 2);
+    assert(draftCursorAt(text, lines[0], 5) == 2);
+    assert(draftCursorAt(text, lines[0], 6) == 3);
+    assert(draftCursorAt(text, lines[0], 7) == 3);
+    assert(draftCursorAt(text, lines[1], 2) == 6);
+
+    foreach (line; lines)
+        assert(textWidth(line.text) <= 7);
+}
+
+unittest
+{
+    import std.array : replicate;
+
+    auto text = "a".replicate(86);
+    auto lines = draftLines(text, 43);
+    auto previousRowCursor = draftCursorAt(text, lines[0], 43);
+
+    assert(previousRowCursor == 42);
+    assert(draftCursorRow(lines, previousRowCursor) == 0);
+    assert(draftCursorAt(text, lines[1], 43) == 86);
+
+    auto explicitBreak = draftLines("abcd\nxy", 4);
+    assert(draftCursorAt("abcd\nxy", explicitBreak[0], 4) == 4);
+    assert(draftCursorRow(explicitBreak, 4) == 0);
 }

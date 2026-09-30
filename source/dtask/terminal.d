@@ -11,44 +11,50 @@ import core.sys.posix.unistd : isatty, read, posixWrite = write, _exit;
 import std.exception : enforce;
 import std.utf : encode;
 
-// POSIX wcwidth is missing from druntime's headers. wchar_t is a 32-bit
-// scalar on the supported POSIX platforms (not Windows' 16-bit wchar_t).
+/*
+ * POSIX wcwidth is missing from druntime's headers. wchar_t is a 32-bit
+ * scalar on the supported POSIX platforms (not Windows' 16-bit wchar_t).
+ */
 private extern (C) int wcwidth(dchar value) nothrow @nogc;
 
-/// Event discriminator; none means no actionable input, interrupt requests shutdown.
+/** Event discriminator; none means no actionable input, interrupt requests shutdown. */
 enum Key
 {
     none, text, escape, enter, backspace, tab, up, down, left, right,
     home, end, pageUp, pageDown, deleteKey, interrupt, mouse, resize
 }
 
-/// Decoded input or resize notification. Only fields associated with key are meaningful.
+/** Decoded input or resize notification. Only fields associated with key are meaningful. */
 struct Event
 {
-    /// Determines whether to read text, mouse coordinates, or no payload.
+    /** Determines whether to read text, mouse coordinates, or no payload. */
     Key key;
-    /// UTF-8 for Key.text, including whole bracketed pastes; unpasted Ctrl-U is "\x15".
+    /** UTF-8 for Key.text, including whole bracketed pastes; unpasted Ctrl-U is "\x15". */
     string text;
-    /// One-based terminal column for Key.mouse.
+    /** One-based terminal column for Key.mouse. */
     int x;
-    /// One-based terminal row for Key.mouse.
+    /** One-based terminal row for Key.mouse. */
     int y;
-    /// Raw SGR mouse code, retaining button, modifier, motion and wheel bits.
+    /** Raw SGR mouse code, retaining button, modifier, motion and wheel bits. */
     int button;
-    /// True for an SGR mouse release report, false for press/wheel reports.
+    /** True for an SGR mouse release report, false for press/wheel reports. */
     bool release;
-    /// Whether the mouse code has the motion bit set; independent of release.
+    /** Whether the mouse code has the motion bit set; independent of release. */
     bool motion;
+    /** True for bracketed clipboard text, which must never execute navigation commands. */
+    bool pasted;
 }
 
-/// Incremental byte decoder independent of file descriptors and clocks.
-/// Callers explicitly expire a lone Escape; incomplete control sequences remain
-/// quarantined until their terminator, even after exceeding the size limit.
+/**
+ * Incremental byte decoder independent of file descriptors and clocks.
+ * Callers explicitly expire a lone Escape; incomplete control sequences remain
+ * quarantined until their terminator, even after exceeding the size limit.
+ */
 struct InputDecoder
 {
-    /// Maximum buffered CSI/SS3 parameter bytes; longer sequences are discarded.
+    /** Maximum buffered CSI/SS3 parameter bytes; longer sequences are discarded. */
     enum maxSequence = 128;
-    /// Maximum UTF-8 paste bytes; excess input is discarded without splitting a scalar.
+    /** Maximum UTF-8 paste bytes; excess input is discarded without splitting a scalar. */
     enum maxPaste = 65_536;
 
     private enum State { ground, escape, intermediate, csi, ss3, controlString, stringEscape, legacyMouse }
@@ -66,14 +72,16 @@ struct InputDecoder
     private uint minimum;
     private uint remaining;
 
-    /// Whether an unpasted lone Escape is pending and may be expired by the caller.
+    /** Whether an unpasted lone Escape is pending and may be expired by the caller. */
     @property bool waitingForEscape() const
     {
         return state == State.escape && !pasting;
     }
 
-    /// Emit Key.escape and clear a pending lone Escape; otherwise return Key.none.
-    /// Does not flush partial UTF-8, paste data, or incomplete control sequences.
+    /**
+     * Emit Key.escape and clear a pending lone Escape; otherwise return Key.none.
+     * Does not flush partial UTF-8, paste data, or incomplete control sequences.
+     */
     Event expireEscape()
     {
         if (!waitingForEscape)
@@ -85,7 +93,7 @@ struct InputDecoder
 
     private Event textEvent(dchar value)
     {
-        // Encoded C1 introducers have the same quarantine rules as ESC forms.
+        /* Encoded C1 introducers have the same quarantine rules as ESC forms. */
         if (value == 0x9b)
         {
             beginSequence(State.csi);
@@ -99,8 +107,9 @@ struct InputDecoder
             return Event.init;
         }
 
-        // C0, DEL and C1 are never editable text, even when UTF-8 encoded.
-        if (value < 0x20 || (value >= 0x7f && value <= 0x9f))
+        /* Paste payloads may retain paragraph breaks and tabs, but no other controls. */
+        const pasteWhitespace = pasting && (value == '\r' || value == '\n' || value == '\t');
+        if ((value < 0x20 && !pasteWhitespace) || (value >= 0x7f && value <= 0x9f))
             return Event.init;
 
         char[4] bytes;
@@ -135,8 +144,10 @@ struct InputDecoder
 
         auto parameters = sequence[0 .. sequenceLength];
 
-        // Old X10 mouse reports carry three bytes after CSI M. We do not
-        // enable this mode, but a stale report must not become editable text.
+        /*
+         * Old X10 mouse reports carry three bytes after CSI M. We do not
+         * enable this mode, but a stale report must not become editable text.
+         */
         if (finalByte == 'M' && parameters.length == 0)
         {
             state = State.legacyMouse;
@@ -152,7 +163,13 @@ struct InputDecoder
             pasting = false;
             auto result = paste.idup;
             paste.length = 0;
-            return result.length ? Event(Key.text, result) : Event.init;
+
+            if (result.length == 0)
+                return Event.init;
+
+            auto event = Event(Key.text, result);
+            event.pasted = true;
+            return event;
         }
 
         if (pasting)
@@ -175,13 +192,15 @@ struct InputDecoder
             if (!parseNumbers(parameters[1 .. $], values[]) || values[1] < 1 || values[2] < 1)
                 return Event.init;
 
-            // Preserve the complete SGR button code: its low bits identify the
-            // button, while modifiers, motion and wheel reports occupy other bits.
+            /*
+             * Preserve the complete SGR button code: its low bits identify the
+             * button, while modifiers, motion and wheel reports occupy other bits.
+             */
             return Event(Key.mouse, "", values[1], values[2], values[0],
                 finalByte == 'm', (values[0] & 32) != 0);
         }
 
-        // Recognize only numeric key parameters, not private/intermediate CSI.
+        /* Recognize only numeric key parameters, not private/intermediate CSI. */
         foreach (character; parameters)
         {
             if ((character < '0' || character > '9') && character != ';')
@@ -244,14 +263,18 @@ struct InputDecoder
         return digit && field + 1 == output.length;
     }
 
-    /// Consume one byte and return at most one event; Key.none means no completed event.
-    /// Text is decoded as UTF-8; control sequences are consumed rather than exposed.
-    /// Bracketed paste emits one bounded text event on termination, with CR/LF/tab
-    /// changed to spaces. Unpasted Ctrl-C resets the decoder and emits Key.interrupt.
+    /**
+     * Consume one byte and return at most one event; Key.none means no completed event.
+     * Text is decoded as UTF-8; control sequences are consumed rather than exposed.
+     * Bracketed paste emits one marked, bounded text event preserving CR/LF/tab.
+     * Unpasted Ctrl-C resets the decoder and emits Key.interrupt.
+     */
     Event feed(ubyte value)
     {
-        // Ctrl-C remains actionable in a broken sequence, but pasted control
-        // bytes never turn into application commands.
+        /*
+         * Ctrl-C remains actionable in a broken sequence, but pasted control
+         * bytes never turn into application commands.
+         */
         if (value == 3 && !pasting)
         {
             this = InputDecoder.init;
@@ -268,7 +291,7 @@ struct InputDecoder
 
         if (state == State.controlString || state == State.stringEscape)
         {
-            // A UTF-8 continuation byte equal to ST (0x9c) is not itself ST.
+            /* A UTF-8 continuation byte equal to ST (0x9c) is not itself ST. */
             bool terminator;
             if (stringRemaining && (value & 0xc0) == 0x80)
             {
@@ -375,21 +398,22 @@ struct InputDecoder
             return Event.init;
         }
 
-        // Some terminals send raw 8-bit CSI/OSC. Do not expose their payload.
+        /* Some terminals send raw 8-bit CSI/OSC. Do not expose their payload. */
         if (value >= 0x80 && value <= 0x9f)
             return textEvent(value);
 
         if (value < 0x20 || value == 0x7f)
         {
             if (pasting)
-                return value == '\r' || value == '\n' || value == '\t' ? textEvent(' ') : Event.init;
+                return value == '\r' || value == '\n' || value == '\t'
+                    ? textEvent(value) : Event.init;
 
             switch (value)
             {
                 case '\r': case '\n': return Event(Key.enter);
                 case 0x7f: case 8: return Event(Key.backspace);
                 case '\t': return Event(Key.tab);
-                // The UI consumes Ctrl-U as a clear-field command, not text.
+                /* The UI consumes Ctrl-U as a clear-field command, not text. */
                 case 0x15: return Event(Key.text, "\x15");
                 default: return Event.init;
             }
@@ -466,6 +490,9 @@ string fit(string text, int width)
 
         foreach (dchar glyph; event.text)
         {
+            if (glyph == '\r' || glyph == '\n' || glyph == '\t')
+                glyph = ' ';
+
             const count = wcwidth(glyph);
             if (count < 0 || (count == 0 && cells == 0))
                 continue;
@@ -488,12 +515,14 @@ string fit(string text, int width)
     return cast(string) result;
 }
 
-// The terminal is a process-wide resource. Saved state is plain native data:
-// handlers touch no class, GC allocation, exception, lock or D runtime service.
-// POSIX specifies write, tcsetattr and _exit as async-signal-safe. SIGKILL and
-// SIGSTOP cannot be intercepted by any application.
-// Button-event mode reports motion only while a button is held. All cleanup
-// paths, including signal handlers, disable it along with SGR encoding.
+/*
+ * The terminal is a process-wide resource. Saved state is plain native data:
+ * handlers touch no class, GC allocation, exception, lock or D runtime service.
+ * POSIX specifies write, tcsetattr and _exit as async-signal-safe. SIGKILL and
+ * SIGSTOP cannot be intercepted by any application.
+ * Button-event mode reports motion only while a button is held. All cleanup
+ * paths, including signal handlers, disable it along with SGR encoding.
+ */
 private enum enterScreen = "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h";
 private enum leaveScreen = "\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l";
 private immutable watchedSignals = [SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGPIPE];
@@ -537,8 +566,10 @@ private extern (C) void terminationHandler(int signalNumber) nothrow @nogc
         const attributesRestored = restoreAttributes() == 0;
         const screenRestored = writeBytes(leaveScreen) == 0;
 
-        // Attempt both cleanup operations even when the first fails. A cleanup
-        // failure gets a nonzero status distinct from normal signal shutdown.
+        /*
+         * Attempt both cleanup operations even when the first fails. A cleanup
+         * failure gets a nonzero status distinct from normal signal shutdown.
+         */
         if (!attributesRestored || !screenRestored)
         {
             _exit(1);
@@ -588,17 +619,21 @@ private int releaseTerminal() nothrow @nogc
 
 private extern (C) void exitCleanup() nothrow @nogc
 {
-    // atexit cannot return an error to main, but cleanup failures must still
-    // be visible to the invoking shell rather than silently reporting success.
+    /*
+     * atexit cannot return an error to main, but cleanup failures must still
+     * be visible to the invoking shell rather than silently reporting success.
+     */
     if (releaseTerminal() != 0)
     {
         _exit(1);
     }
 }
 
-/// Exclusive process-wide owner of stdin/stdout TTY state and the alternate screen.
-/// Use scope(exit) close() for deterministic restoration. Exit and termination-signal
-/// handlers provide fallback cleanup; SIGKILL and SIGSTOP cannot be intercepted.
+/**
+ * Exclusive process-wide owner of stdin/stdout TTY state and the alternate screen.
+ * Use scope(exit) close() for deterministic restoration. Exit and termination-signal
+ * handlers provide fallback cleanup; SIGKILL and SIGSTOP cannot be intercepted.
+ */
 final class Terminal
 {
     private bool open;
@@ -606,9 +641,11 @@ final class Terminal
     private int lastColumns;
     private int lastRows;
 
-    /// Acquire TTY ownership, enter raw mode, and enable SGR button-motion mouse
-    /// reporting and bracketed paste. Throws for non-TTY descriptors, an existing
-    /// owner, or setup failure; partial setup is restored before propagating failure.
+    /**
+     * Acquire TTY ownership, enter raw mode, and enable SGR button-motion mouse
+     * reporting and bracketed paste. Throws for non-TTY descriptors, an existing
+     * owner, or setup failure; partial setup is restored before propagating failure.
+     */
     this()
     {
         enforce(!ownsTerminal, "A terminal is already owned by this process");
@@ -633,8 +670,10 @@ final class Terminal
         ownsTerminal = 1;
         scope (failure)
         {
-            // If initialization fails, restore the terminal before propagating
-            // the original error. Failed restoration cannot report success.
+            /*
+             * If initialization fails, restore the terminal before propagating
+             * the original error. Failed restoration cannot report success.
+             */
             if (releaseTerminal() != 0)
             {
                 _exit(1);
@@ -667,8 +706,10 @@ final class Terminal
         size(lastColumns, lastRows);
     }
 
-    /// Restore terminal attributes, screen modes and signal handlers; repeated calls
-    /// are harmless. Throws if restoration fails. This instance cannot be reopened.
+    /**
+     * Restore terminal attributes, screen modes and signal handlers; repeated calls
+     * are harmless. Throws if restoration fails. This instance cannot be reopened.
+     */
     void close()
     {
         if (!open)
@@ -678,16 +719,20 @@ final class Terminal
         enforce(releaseTerminal() == 0, "Cannot restore terminal state");
     }
 
-    /// Write trusted rendering bytes, including intentional ANSI commands.
-    /// Pass editable/stored text through fit first. Throws if closed or output fails.
+    /**
+     * Write trusted rendering bytes, including intentional ANSI commands.
+     * Pass editable/stored text through fit first. Throws if closed or output fails.
+     */
     void write(string text)
     {
         enforce(open, "Terminal is closed");
         enforce(writeBytes(text) == 0, "Cannot write to terminal");
     }
 
-    /// Read terminal dimensions; zero dimensions fall back independently to 80x24.
-    /// Throws if closed or the dimension query fails.
+    /**
+     * Read terminal dimensions; zero dimensions fall back independently to 80x24.
+     * Throws if closed or the dimension query fails.
+     */
     void size(out int columns, out int rows)
     {
         enforce(open, "Terminal is closed");
@@ -697,10 +742,12 @@ final class Terminal
         rows = dimensions.ws_row ? dimensions.ws_row : 24;
     }
 
-    /// Wait for input or a size change; an idle poll may return Key.none.
-    /// A lone Escape expires after 35 ms without input; normal idle polls use 100 ms.
-    /// EOF, hangup or decoded Ctrl-C closes the terminal and returns Key.interrupt.
-    /// Throws if closed or terminal I/O fails. Resize events carry no size payload.
+    /**
+     * Wait for input or a size change; an idle poll may return Key.none.
+     * A lone Escape expires after 35 ms without input; normal idle polls use 100 ms.
+     * EOF, hangup or decoded Ctrl-C closes the terminal and returns Key.interrupt.
+     * Throws if closed or terminal I/O fails. Resize events carry no size payload.
+     */
     Event readEvent()
     {
         enforce(open, "Terminal is closed");

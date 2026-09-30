@@ -36,7 +36,7 @@ unittest
     auto events = decode("\x15");
     assert(events == [Event(Key.text, "\x15")]);
 
-    // Pasted and quarantined control bytes must never clear the form field.
+    /* Pasted and quarantined control bytes must never clear the form field. */
     assert(decode("\x1b[200~\x15\x1b[201~").length == 0);
     assert(decode("\x1b[\x15A").length == 0);
     assert(decode("\x1b]title\x15\x07").length == 0);
@@ -101,8 +101,10 @@ unittest
 
 unittest
 {
-    // A drag is three distinct events, not a click followed by editable text.
-    // Legacy positional constructors still default the trailing motion flag.
+    /*
+     * A drag is three distinct events, not a click followed by editable text.
+     * Legacy positional constructors still default the trailing motion flag.
+     */
     auto events = decode("\x1b[<0;12;9M\x1b[<32;18;11M\x1b[<0;18;11m");
     assert(events == [
         Event(Key.mouse, "", 12, 9, 0, false),
@@ -111,15 +113,18 @@ unittest
     ]);
 
     assert(fit("a\x1b[<32;18;11Mb", 2) == "ab");
-    assert(decode("\x1b[200~a\x1b[<32;18;11Mb\x1b[201~") == [Event(Key.text, "ab")]);
+    auto pasted = decode("\x1b[200~a\x1b[<32;18;11Mb\x1b[201~");
+    assert(pasted.length == 1 && pasted[0].text == "ab" && pasted[0].pasted);
 }
 
 unittest
 {
     import std.conv : to;
 
-    // Shift, Alt and Ctrl must survive independently of button identity and
-    // motion. Wheel and extended button codes retain their raw values too.
+    /*
+     * Shift, Alt and Ctrl must survive independently of button identity and
+     * motion. Wheel and extended button codes retain their raw values too.
+     */
     foreach (modifiers; [0, 4, 8, 16, 28])
     {
         foreach (button; [0, 1, 2, 3, 64, 65, 66, 67, 128, 129])
@@ -140,8 +145,10 @@ unittest
 
 unittest
 {
-    // Invalid or overlong drag reports are consumed through the CSI final
-    // byte. The next ordinary character is the only editable text emitted.
+    /*
+     * Invalid or overlong drag reports are consumed through the CSI final
+     * byte. The next ordinary character is the only editable text emitted.
+     */
     foreach (sequence; ["\x1b[<32;0;1M", "\x1b[<32;1;0M", "\x1b[<32;1M",
         "\x1b[<32;1;2;3M", "\x1b[<32;;2M", "\x1b[<32;1;M",
         "\x1b[<-32;1;2M", "\x1b[<32;-1;2M", "\x1b[<32;1;2A",
@@ -166,7 +173,7 @@ unittest
 
 unittest
 {
-    // Private mode controls, including drag cleanup, are never input text.
+    /* Private mode controls, including drag cleanup, are never input text. */
     auto enter = "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h";
     auto leave = "\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l";
     assert(decode(enter ~ leave ~ "q") == [Event(Key.text, "q")]);
@@ -174,8 +181,10 @@ unittest
 
 unittest
 {
-    // Every byte is supplied independently: no chunk-size assumption and no
-    // wall-clock delay can accidentally make a fragmented sequence pass.
+    /*
+     * Every byte is supplied independently: no chunk-size assumption and no
+     * wall-clock delay can accidentally make a fragmented sequence pass.
+     */
     auto events = decode("\u4e2d\u6587e\u0301\U0001f642");
     assert(events.length == 5);
     assert(events[0].text == "\u4e2d");
@@ -238,9 +247,14 @@ unittest
 {
     auto events = decode("\x1b[200~one\ntwo\t\u4e2d\x03\x1b[31m!\x1b[201~q");
     assert(events.length == 2);
-    assert(events[0] == Event(Key.text, "one two \u4e2d!"));
+    assert(events[0].key == Key.text);
+    assert(events[0].text == "one\ntwo\t\u4e2d!" && events[0].pasted);
     assert(events[1] == Event(Key.text, "q"));
     assert(decode("\x1b[200~\x1b[201~").length == 0);
+    auto paragraphs = decode("\x1b[200~first\r\n\r\nlast\titem\x1b[201~");
+    assert(paragraphs.length == 1 && paragraphs[0].pasted);
+    assert(paragraphs[0].text == "first\r\n\r\nlast\titem");
+    assert(fit("\x1b[200~a\nb\tc\x1b[201~", 5) == "a b c");
 
     InputDecoder decoder;
     foreach (ubyte value; cast(const(ubyte)[]) "\x1b[200~")
@@ -254,6 +268,7 @@ unittest
         result = decoder.feed(value);
 
     assert(result.key == Key.text);
+    assert(result.pasted);
     assert(result.text.length == InputDecoder.maxPaste);
     foreach (character; result.text)
         assert(character == 'x');
@@ -266,8 +281,10 @@ unittest
     foreach (ubyte value; cast(const(ubyte)[]) "\u4e2dz\x1b[201~")
         result = decoder.feed(value);
 
-    // Truncation preserves a valid UTF-8 prefix, rather than admitting later
-    // smaller glyphs after the first one that exceeded the byte budget.
+    /*
+     * Truncation preserves a valid UTF-8 prefix, rather than admitting later
+     * smaller glyphs after the first one that exceeded the byte budget.
+     */
     assert(result.text.length == InputDecoder.maxPaste - 1);
     assert(result.text[$ - 1] == 'a');
 }
@@ -299,8 +316,10 @@ unittest
 {
     import std.utf : validate;
 
-    // A deterministic hostile-byte corpus checks both boundaries. The LCG
-    // seed is fixed; assertions cannot depend on scheduling or locale setup.
+    /*
+     * A deterministic hostile-byte corpus checks both boundaries. The LCG
+     * seed is fixed; assertions cannot depend on scheduling or locale setup.
+     */
     InputDecoder decoder;
     uint random = 0x12345678;
     foreach (_; 0 .. 20_000)
@@ -312,13 +331,16 @@ unittest
 
         validate(event.text);
         foreach (dchar value; event.text)
-            assert(value == 0x15 || (value >= 0x20 && !(value >= 0x7f && value <= 0x9f)));
+            assert(value == 0x15 || (event.pasted && (value == '\r' || value == '\n' || value == '\t'))
+                || (value >= 0x20 && !(value >= 0x7f && value <= 0x9f)));
     }
 }
 
-// Build with -d-version=TerminalProbe (without tests/runner.d) to exercise the
-// actual TTY boundary from a PTY driver. READY is the synchronization event;
-// tests wait for it before resizing, sending input, or delivering a signal.
+/*
+ * Build with -d-version=TerminalProbe (without tests/runner.d) to exercise the
+ * actual TTY boundary from a PTY driver. READY is the synchronization event;
+ * tests wait for it before resizing, sending input, or delivering a signal.
+ */
 version (TerminalProbe)
 {
     int main()

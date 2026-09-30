@@ -208,7 +208,7 @@ def tui_checks(binary: str, root: Path, evidence: Path) -> None:
         session.send("\t")
         session.type_text("Read the rollout checklist")
         evidence.joinpath("form.ansi").write_bytes(session.frames[-1])
-        session.send("\r")
+        session.click("[Save]")
         evidence.joinpath("workspace.ansi").write_bytes(session.frames[-1])
         command(binary, data, "add", "Concurrent writer", success=False)
 
@@ -286,7 +286,7 @@ def mouse_checks(binary: str, root: Path, evidence: Path) -> None:
 
     with terminal(binary, data, 48, 20) as session:
         session.send("n")
-        session.send("\x1b[200~中文 cafe\u0301 \x1b[31mred\x1b[0m\x1b[201~")
+        session.send("\x1b[200~中文\ncafe\u0301 \x1b[31mred\x1b[0m\x1b[201~")
         session.send("\r")
         evidence.joinpath("unicode-minimum.ansi").write_bytes(session.frames[-1])
         session.resize(40, 12)
@@ -448,6 +448,119 @@ def calendar_checks(binary: str, root: Path, evidence: Path) -> None:
 
     print("PASS: clickable calendar, year boundary, priority selection and draft cancellation")
 
+def description_checks(binary: str, root: Path, evidence: Path) -> None:
+    title = "Review a long task title with all of its context preserved for readability"
+    notes = "Opening paragraph with enough context to read comfortably.\n\n"
+    notes += "\n\n".join(
+        f"Paragraph {index:02}: preserve every useful detail, including 中文 and cafe\u0301."
+        for index in range(1, 16)
+    )
+    notes += "\n\n" + "longword" * 20 + "\n\nEND_DESCRIPTION_SENTINEL"
+
+    for columns, rows in [(120, 32), (48, 20)]:
+        data = root / f"description-{columns}.json"
+        command(binary, data, "add", title, "--priority", "high", "--notes", notes)
+        command(binary, data, "add", "Second task", "--priority", "low", "--notes", "Second description")
+        original = data.read_bytes()
+
+        with terminal(binary, data, columns, rows) as session:
+            if columns == 120:
+                preview_x, preview_y = session.cell("Opening paragraph")
+                for _ in range(12):
+                    session.send(f"\x1b[<65;{preview_x};{preview_y}M")
+                session.cell("END_DESCRIPTION_SENTINEL")
+                for _ in range(12):
+                    session.send(f"\x1b[<64;{preview_x};{preview_y}M")
+                session.cell("Opening paragraph")
+            evidence.joinpath(f"description-preview-{columns}.ansi").write_bytes(session.frames[-1])
+            session.send("\x1b[200~q\x1b[201~")
+            session.click("[Details]")
+            evidence.joinpath(f"description-reader-{columns}.ansi").write_bytes(session.frames[-1])
+            session.send("\x1b[F")
+            session.cell("END_DESCRIPTION_SENTINEL")
+            evidence.joinpath(f"description-last-{columns}.ansi").write_bytes(session.frames[-1])
+            session.send("\x1b[H")
+            for _ in range(40):
+                session.send("\x1b[<65;6;10M")
+            session.cell("END_DESCRIPTION_SENTINEL")
+            session.send("\x1b[H")
+            for _ in range(40):
+                session.click("[Down]")
+            session.cell("END_DESCRIPTION_SENTINEL")
+            assert data.read_bytes() == original
+
+            session.click("[Back]")
+            session.send("j")
+            session.click("[Details]")
+            session.cell("Second description")
+            session.click("[Back]")
+            session.send("k")
+            session.click("[Details]")
+            session.cell("Opening paragraph")
+            resized = (60, 24) if columns == 120 else (120, 32)
+            session.resize(*resized)
+            os.kill(session.process.pid, signal.SIGWINCH)
+            session.frame()
+            session.send("\x1b[F")
+            session.cell("END_DESCRIPTION_SENTINEL")
+            session.resize(columns, rows)
+            os.kill(session.process.pid, signal.SIGWINCH)
+            session.frame()
+            session.click("[Edit]")
+            session.click("[Edit description]")
+            session.send("\x15")
+            session.send("\x1b[200~Discard this\r\n\r\nmultiline draft\x1b[201~")
+            session.send("\r")
+            session.type_text("Another paragraph")
+            assert data.read_bytes() == original
+            session.click("[Back]")
+            session.click("[Cancel]")
+            assert data.read_bytes() == original
+
+            session.send("e")
+            session.click("[Edit description]")
+            session.send("\x15")
+            session.send("\x1b[200~First pasted paragraph\r\n\r\nLast pasted paragraph\titem\x1b[201~")
+            session.send("\r")
+            session.type_text("中文 cafe\u0301 END_EDITED_SENTINEL")
+            evidence.joinpath(f"description-editor-{columns}.ansi").write_bytes(session.frames[-1])
+            assert data.read_bytes() == original
+            session.click("[Save]")
+            expected = "First pasted paragraph\n\nLast pasted paragraph\titem\n中文 cafe\u0301 END_EDITED_SENTINEL"
+            assert json.loads(data.read_text(encoding="utf-8"))["tasks"][0]["notes"] == expected
+            session.click("[Details]")
+            session.send("\x1b[F")
+            session.cell("END_EDITED_SENTINEL")
+            session.click("[Back]")
+            session.send("d")
+            session.send("\x1b[200~y\x1b[201~")
+            assert len(json.loads(data.read_text(encoding="utf-8"))["tasks"]) == 2
+            session.send("\x1b")
+            session.finish()
+
+    print("PASS: complete description reading, scrolling, resize, multiline paste and draft safety")
+
+def cursor_boundary_checks(binary: str, root: Path) -> None:
+    for columns, rows in [(48, 20), (120, 32)]:
+        data = root / f"cursor-{columns}.json"
+        line_width = columns - 5
+
+        with terminal(binary, data, columns, rows) as session:
+            session.send("n")
+            session.type_text("Cursor boundary")
+            session.click("[Edit description]")
+            session.send("\x1b[200~" + "a" * (line_width * 2) + "\x1b[201~")
+            session.send("\x1b[F")
+            session.send("\x1b[A")
+            session.type_text("X")
+            session.click("[Save]")
+            session.finish()
+
+        notes = json.loads(command(binary, data, "list", "--json").stdout)[0]["notes"]
+        assert notes == "a" * (line_width - 1) + "X" + "a" * (line_width + 1)
+
+    print("PASS: vertical cursor movement stays on the requested soft-wrapped row")
+
 def main() -> None:
     binary = str(Path(sys.argv[1]).resolve())
 
@@ -462,6 +575,8 @@ def main() -> None:
         navigation_checks(binary, root, evidence)
         scheduling_checks(binary, root, evidence)
         calendar_checks(binary, root, evidence)
+        description_checks(binary, root, evidence)
+        cursor_boundary_checks(binary, root)
 
     print("PASS: all integration checks")
 

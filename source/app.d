@@ -217,12 +217,14 @@ Keyboard:
   j/k or arrows: select     n: new       e/Enter: edit
   Space: complete/reopen    p: priority  d: delete (confirm)
   /: search                1-4: views   ?: help
-  r: reload theme          q: quit      Esc: cancel
+  v: full task reader      r: theme     q: quit / Esc: cancel
 
 Mouse:
   Click a task to select; click its checkbox to complete.
   Drag tasks to Today, Tomorrow, Weekend, Next week, or No date.
   Click Date for a calendar; click priorities and dates while editing.
+  Click Details for wrapped descriptions; wheel and buttons scroll them.
+  Edit description opens a multiline draft; Enter adds a paragraph.
   Save applies an edit; Cancel discards it. Wheel scrolls the list.
 
 Data: $XDG_DATA_HOME/dtask/tasks.json (default ~/.local/share/dtask/)

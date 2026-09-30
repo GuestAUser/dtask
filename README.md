@@ -81,6 +81,21 @@ date. Dropping outside a target, pressing Esc, or resizing cancels without
 changing the task. Shift-drag may select terminal text instead, depending
 on your terminal.
 
+## Reading and editing descriptions
+
+Roomy terminals show the selected task's full, wrapped title and description
+below the list. Click **Expand** or **Details** to open a dedicated reader;
+this is also available on small terminals. Paragraphs and blank lines stay
+intact. Scroll with the wheel, **Up/Down** buttons, arrow keys, or Page Up/
+Page Down. Home and End jump to the beginning and end without changing tasks.
+
+In the task editor, click **Edit description** for a multiline draft.
+Enter starts a new paragraph, and pasted text keeps its paragraph breaks.
+Click to position the cursor; arrows, Home/End, Backspace, Delete, and Ctrl-U
+work without splitting UTF-8 text. **Back** returns to the fields while
+keeping the draft. **Save** saves the task; **Cancel** or Esc discards the
+whole edit. Reading or scrolling never changes stored task data.
+
 ## Working with tasks
 
 | Key | Action |
@@ -90,6 +105,7 @@ on your terminal.
 | Page Up / Page Down | Move by one page |
 | `n` | New task |
 | `e`, Enter | Edit the selected task |
+| `v` | Open the full task reader |
 | Space | Complete or reopen |
 | `p` | Cycle low, normal, high, urgent |
 | `d` | Delete; `y` confirms and Esc cancels |
@@ -107,9 +123,10 @@ the month.
 
 In the editor, Tab moves between title, priority, date, and notes.
 Ctrl-U clears a field; Backspace removes the character before the cursor.
-Enter saves the entire form, Esc discards it. Arrow keys, Home/End, and Delete let you
-correct text in place. Bracketed paste is accepted as text, not interpreted
-as keyboard commands.
+Enter saves from title, priority, or date; from notes it opens multiline
+editing. Inside the multiline editor, Enter inserts a newline and Tab
+returns to the fields. Use the Save button to apply the draft. Bracketed
+paste is text, never a navigation or deletion command.
 
 Dates accept `YYYY-MM-DD`, `today`, `tomorrow`, `fri`, `next monday`,
 `next week`, `weekend`, `+7d`, or `in 7 days`. `next week` means the next

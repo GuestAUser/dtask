@@ -4,23 +4,26 @@ import dtask.model;
 import dtask.terminal;
 import dtask.theme;
 import dtask.widgets;
+import dtask.text : wrapText, textWidth;
 import std.algorithm : min, max;
 import std.conv : to;
 import std.datetime : Date;
-import std.string : strip;
+import std.string : strip, replace;
 
-private enum Mode { browse, search, edit, calendar, confirmDelete, help }
+private enum Mode { browse, search, edit, descriptionEdit, reader, calendar, confirmDelete, help }
 
 private static immutable tabLabels = ["1 Open", "2 Today", "3 All", "4 Done"];
 private static immutable filterValues = ["open", "today", "all", "done"];
 private static immutable fieldLabels = ["Title", "Priority", "Due date", "Notes"];
 private static immutable priorityLabels = ["low", "normal", "high", "urgent"];
 
-/// Run the mouse/keyboard workspace using an open, loaded store and a validated palette.
-/// Owns and restores the terminal, but leaves store ownership with the caller.
-/// themePath is used for reload; empty reloads the built-in palette. Task mutations
-/// persist immediately, except editor drafts, which persist only on Save.
-/// Returns on quit/interrupt; terminal setup, rendering and I/O failures propagate.
+/**
+ * Run the mouse/keyboard workspace using an open, loaded store and a validated palette.
+ * Owns and restores the terminal, but leaves store ownership with the caller.
+ * themePath is used for reload; empty reloads the built-in palette. Task mutations
+ * persist immediately, except editor drafts, which persist only on Save.
+ * Returns on quit/interrupt; terminal setup, rendering and I/O failures propagate.
+ */
 void runUI(TaskStore store, Theme theme, string themePath)
 {
     auto terminal = new Terminal();
@@ -62,6 +65,10 @@ private final class Workspace
     size_t searchCursor;
     int field;
     int helpOffset;
+    ulong descriptionId;
+    int descriptionOffset;
+    int draftOffset;
+    bool followDraftCursor = true;
     ulong dragId;
     int pressX;
     int pressY;
@@ -119,7 +126,9 @@ private final class Workspace
             }
         }
 
-        listHeight = max(1, rows - (wideSchedule(columns, rows) ? 12 : 14));
+        listHeight = mode == Mode.browse || mode == Mode.search || mode == Mode.confirmDelete
+            ? taskListHeight(columns, rows, cast(int) visible.length)
+            : max(1, rows - (wideSchedule(columns, rows) ? 12 : 14));
         listWidth = wideSchedule(columns, rows) ? columns - 34 : columns;
         selected = max(0, min(selected, cast(int) visible.length - 1));
         offset = max(0, min(offset, max(0, cast(int) visible.length - listHeight)));
@@ -128,6 +137,15 @@ private final class Workspace
             offset = selected;
         else if (selected >= offset + listHeight)
             offset = selected - listHeight + 1;
+
+        auto task = current();
+        auto id = task is null ? 0 : task.id;
+
+        if (id != descriptionId)
+        {
+            descriptionId = id;
+            descriptionOffset = 0;
+        }
     }
 
     Task* current()
@@ -219,9 +237,10 @@ private final class Workspace
 
         if (task !is null)
         {
-            auto detail = "  #" ~ to!string(task.id) ~ " " ~ task.title
-                ~ (task.notes.length ? " | " ~ task.notes : "");
-            line(frame, 4, ink(theme.muted, fit(detail, columns)));
+            auto detail = "  #" ~ to!string(task.id) ~ " / " ~ priorityLabel(task.priority)
+                ~ " / " ~ (task.due.length ? task.due : "no date");
+            line(frame, 4, ink(theme.muted, fit(detail, columns - 12)));
+            at(frame, columns - 10, 4, "[Details]", 9, theme.accent);
         }
 
         foreach (index, label; tabLabels)
@@ -236,7 +255,11 @@ private final class Workspace
         line(frame, 6, ink(mode == Mode.search ? theme.accent : theme.muted, fit(searchText, columns - 10)));
         at(frame, columns - 8, 6, "[Clear]", 7, theme.accent);
 
-        if (mode == Mode.calendar)
+        if (mode == Mode.reader)
+            renderDescription(frame, descriptionBody(columns, rows), true);
+        else if (mode == Mode.descriptionEdit)
+            renderDescriptionEditor(frame);
+        else if (mode == Mode.calendar)
             renderCalendar(frame);
         else
         {
@@ -255,7 +278,11 @@ private final class Workspace
 
         string actions;
 
-        if (mode == Mode.edit)
+        if (mode == Mode.descriptionEdit)
+            actions = "  [Save] [Back] [Cancel]";
+        else if (mode == Mode.reader)
+            actions = "  [Edit] [Back]";
+        else if (mode == Mode.edit)
             actions = "  [Save] [Cancel] [Pick date]";
         else if (mode == Mode.calendar || mode == Mode.help)
             actions = "  [Back]";
@@ -268,11 +295,14 @@ private final class Workspace
         line(frame, rows - 2, ink(status.length >= 6 && status[0 .. 6] == "Error:"
             ? theme.urgent : theme.muted, fit("  " ~ status, columns)));
 
-        auto footer = mode == Mode.edit ? "  Tab: field | Enter: save | Esc: cancel"
+        auto footer = mode == Mode.descriptionEdit ? "  Enter: newline | Tab: back | Esc: cancel"
+            : mode == Mode.reader ? "  Wheel/PgUp/PgDn/Home/End | Esc: back"
+            : mode == Mode.edit ? (field == 3 ? "  Enter: describe | Tab: field | Esc: cancel"
+                : "  Tab: field | Enter: save | Esc: cancel")
             : mode == Mode.calendar ? "  Click a day | Esc: back, no date change"
             : mode == Mode.help ? "  Wheel/Up/Down: scroll | Esc: back"
             : mode == Mode.confirmDelete ? "  Delete task #" ~ to!string(deletingId) ~ "? y / Esc"
-            : "  Drag to schedule | / search | ? help | q quit";
+            : "  v: details | / search | ? help | q quit";
         line(frame, rows - 1, ink(theme.muted, fit(footer, columns), theme.panel));
         line(frame, rows, "");
         terminal.write(frame ~ reset);
@@ -304,6 +334,158 @@ private final class Workspace
             else if (row == 2 && visible.length == 0 && query.length)
                 line(frame, 8 + row, ink(theme.muted, fit("  Try another search or view.", listWidth)));
         }
+
+        auto panel = previewBody();
+
+        if (panel.height > 0 && current() !is null)
+            renderDescription(frame, panel, false);
+    }
+
+    CellRect previewBody()
+    {
+        auto available = max(1, rows - (wideSchedule(columns, rows) ? 12 : 14));
+        return CellRect(3, 9 + listHeight, listWidth - 4, available - listHeight - 1);
+    }
+
+    string[] descriptionLines(int width)
+    {
+        auto task = current();
+
+        if (task is null)
+            return ["No task selected."];
+
+        return wrapText(task.title, width) ~ ["", "DESCRIPTION"]
+            ~ wrapText(task.notes.length ? task.notes : "No description yet. Click Edit to add one.", width);
+    }
+
+    void scrollDescription(int amount, bool absolute = false)
+    {
+        auto body = mode == Mode.reader ? descriptionBody(columns, rows) : previewBody();
+        auto count = cast(int) descriptionLines(body.width).length;
+        descriptionOffset = max(0, min(max(0, count - body.height),
+            absolute ? amount : descriptionOffset + amount));
+    }
+
+    void renderDescription(ref string frame, CellRect body, bool expanded)
+    {
+        auto lines = descriptionLines(body.width);
+        descriptionOffset = max(0, min(descriptionOffset, max(0, cast(int) lines.length - body.height)));
+        auto position = to!string(descriptionOffset + 1) ~ "-"
+            ~ to!string(min(cast(int) lines.length, descriptionOffset + body.height))
+            ~ "/" ~ to!string(lines.length);
+
+        at(frame, body.x, body.y - 1, expanded ? "TASK DETAILS" : "SELECTED TASK", body.width, theme.accent);
+
+        if (!expanded)
+            at(frame, body.x + body.width - 9, body.y - 1, "[Expand]", 8, theme.accent);
+
+        foreach (row; 0 .. body.height)
+        {
+            auto index = descriptionOffset + row;
+            at(frame, body.x, body.y + row, index < lines.length ? lines[index] : "",
+                body.width, theme.foreground, theme.panel);
+        }
+
+        /* Inline controls share the heading; full reader controls have their own row. */
+        auto controlRow = expanded ? rows - 5 : body.y - 1;
+        auto controlX = expanded ? 3 : body.x + 15;
+        at(frame, controlX, controlRow, "[Up] [Down] " ~ position,
+            expanded ? body.width : body.width - 25, theme.accent);
+    }
+
+    void beginReader()
+    {
+        if (current() is null)
+            return;
+
+        mode = Mode.reader;
+        clearDrag();
+        status = "Read only. Edit opens a separate draft.";
+    }
+
+    void beginDescriptionEdit()
+    {
+        mode = Mode.descriptionEdit;
+        field = 3;
+        followDraftCursor = true;
+        status = "Save task | Back: draft | Cancel: discard";
+    }
+
+    void renderDescriptionEditor(ref string frame)
+    {
+        auto body = descriptionBody(columns, rows);
+        auto lines = draftLines(fields[3], body.width - 1);
+        auto cursorRow = draftCursorRow(lines, cursors[3]);
+
+        if (followDraftCursor)
+        {
+            if (cursorRow < draftOffset)
+                draftOffset = cursorRow;
+            else if (cursorRow >= draftOffset + body.height)
+                draftOffset = cursorRow - body.height + 1;
+        }
+
+        draftOffset = max(0, min(draftOffset, max(0, cast(int) lines.length - body.height)));
+        at(frame, 3, 7, "DESCRIPTION / UNSAVED DRAFT", body.width, theme.accent);
+
+        foreach (row; 0 .. body.height)
+        {
+            auto index = draftOffset + row;
+            string text;
+
+            if (index < lines.length)
+            {
+                text = lines[index].text;
+
+                if (index == cursorRow)
+                {
+                    auto points = to!dstring(fields[3]);
+                    auto before = to!string(points[lines[index].start .. cursors[3]]);
+                    auto prefix = draftLines(before, body.width)[0].text;
+                    auto rendered = to!dstring(text);
+                    text = prefix ~ "|" ~ to!string(rendered[to!dstring(prefix).length .. $]);
+                }
+            }
+
+            at(frame, body.x, body.y + row, text, body.width, theme.foreground,
+                index == cursorRow ? theme.selected : theme.panel);
+        }
+
+        at(frame, 3, rows - 5, "[Up] [Down] " ~ to!string(draftOffset + 1) ~ "-"
+            ~ to!string(min(cast(int) lines.length, draftOffset + body.height)) ~ "/"
+            ~ to!string(lines.length), body.width, theme.accent);
+    }
+
+    void handleDescriptionEdit(Event event)
+    {
+        auto body = descriptionBody(columns, rows);
+        auto lines = draftLines(fields[3], body.width - 1);
+        auto row = draftCursorRow(lines, cursors[3]);
+        auto points = to!dstring(fields[3]);
+        followDraftCursor = true;
+
+        if (event.key == Key.escape)
+            cancelEdit();
+        else if (event.key == Key.tab)
+        {
+            mode = Mode.edit;
+            status = "Description kept in draft. Save applies; Cancel discards.";
+        }
+        else if (event.key == Key.enter)
+            editText(fields[3], cursors[3], Event(Key.text, "\n"), size_t.max);
+        else if (event.key == Key.up || event.key == Key.down)
+        {
+            auto column = textWidth(to!string(points[lines[row].start .. cursors[3]]));
+            auto next = max(0, min(cast(int) lines.length - 1, row + (event.key == Key.up ? -1 : 1)));
+            cursors[3] = draftCursorAt(fields[3], lines[next], column);
+        }
+        else if (event.key == Key.pageUp || event.key == Key.pageDown)
+        {
+            draftOffset += event.key == Key.pageUp ? -body.height : body.height;
+            followDraftCursor = false;
+        }
+        else
+            editText(fields[3], cursors[3], event, size_t.max);
     }
 
     void renderSchedule(ref string frame, bool calendar)
@@ -381,6 +563,8 @@ private final class Workspace
                         chosen ? theme.success : theme.muted, chosen ? theme.selected : surface);
                 }
             }
+            else if (index == 3)
+                at(frame, 13, row, "[Edit description]", width - 14, theme.accent, surface);
             else
             {
                 auto budget = width - (index == 2 ? 28 : 14);
@@ -396,7 +580,7 @@ private final class Workspace
 
         if (listHeight > 8)
         {
-            at(frame, 3, 15, "Click priority or a date. Only Save writes changes.", width - 4, theme.muted);
+            at(frame, 3, 15, "Description: Enter opens multiline editing.", width - 4, theme.muted);
             at(frame, 3, 16, "Text: Left/Right, Home/End, Delete, Ctrl-U to clear.", width - 4, theme.muted);
         }
     }
@@ -459,6 +643,9 @@ private final class Workspace
             "Save writes the draft; Cancel discards it.",
             "j/k, arrows: select | wheel: scroll",
             "n: new | e / Enter: edit | Space: done",
+            "v / Details: reader; wheel and PgUp/PgDn scroll",
+            "Description: Enter adds newline; Save applies",
+            "Description Back keeps draft; Cancel discards",
             "p: priority | d: delete with confirmation",
             "/: search | 1/2/3/4: Open/Today/All/Done",
             "Text: arrows, Home/End, Delete, Ctrl-U",
@@ -491,6 +678,7 @@ private final class Workspace
             cursors[index] = to!dstring(text).length;
 
         field = 0;
+        draftOffset = 0;
         mode = Mode.edit;
         status = "Draft only. Click Save or Cancel. Ctrl-U clears.";
     }
@@ -538,8 +726,10 @@ private final class Workspace
         }
         catch (Exception error)
         {
-            // A partially typed date must not trap the user outside the picker.
-            // Keep the draft intact until they choose a valid replacement.
+            /*
+             * A partially typed date must not trap the user outside the picker.
+             * Keep the draft intact until they choose a valid replacement.
+             */
             status = "Invalid draft date: " ~ error.msg ~ " Choose a day to replace it.";
         }
 
@@ -595,7 +785,7 @@ private final class Workspace
         dropTarget = -1;
     }
 
-    // Cursor indices count Unicode code points, never partial UTF-8 bytes.
+    /* Cursor indices count Unicode code points, never partial UTF-8 bytes. */
     void editText(ref string text, ref size_t cursor, Event event, size_t limit)
     {
         auto points = to!dstring(text);
@@ -625,7 +815,17 @@ private final class Workspace
                 }
                 else if (text.length + event.text.length <= limit)
                 {
-                    const inserted = to!dstring(event.text);
+                    auto input = event.text;
+
+                    if (event.pasted)
+                    {
+                        input = input.replace("\r\n", "\n").replace("\r", "\n");
+
+                        if (mode != Mode.descriptionEdit)
+                            input = input.replace("\n", " ").replace("\t", " ");
+                    }
+
+                    const inserted = to!dstring(input);
                     points = points[0 .. cursor] ~ inserted ~ points[cursor .. $];
                     cursor += inserted.length;
                 }
@@ -646,6 +846,7 @@ private final class Workspace
 
         if (event.key == Key.resize)
         {
+            followDraftCursor = true;
             if (dragId != 0)
                 status = "Drag cancelled by resize.";
 
@@ -654,6 +855,9 @@ private final class Workspace
         }
 
         if (event.key == Key.none)
+            return;
+
+        if (event.pasted && mode != Mode.edit && mode != Mode.descriptionEdit && mode != Mode.search)
             return;
 
         if (columns < 48 || rows < 20)
@@ -679,16 +883,50 @@ private final class Workspace
             return;
         }
 
+        if (mode == Mode.descriptionEdit)
+        {
+            handleDescriptionEdit(event);
+            return;
+        }
+
+        if (mode == Mode.reader)
+        {
+            if (event.key == Key.escape || (event.key == Key.text && event.text == "v"))
+                mode = Mode.browse;
+            else if (event.key == Key.enter || (event.key == Key.text && event.text == "e"))
+                beginEdit(true);
+            else if (event.key == Key.home)
+                scrollDescription(0, true);
+            else if (event.key == Key.end)
+                scrollDescription(int.max, true);
+            else if (event.key == Key.up || event.key == Key.down)
+                scrollDescription(event.key == Key.up ? -1 : 1);
+            else if (event.key == Key.pageUp || event.key == Key.pageDown)
+                scrollDescription(event.key == Key.pageUp ? -(rows - 13) : rows - 13);
+
+            return;
+        }
+
         if (mode == Mode.edit)
         {
             if (event.key == Key.escape)
                 cancelEdit();
             else if (event.key == Key.enter)
-                saveForm();
+            {
+                if (field == 3)
+                    beginDescriptionEdit();
+                else
+                    saveForm();
+            }
             else if (event.key == Key.tab || event.key == Key.down)
                 field = (field + 1) % 4;
             else if (event.key == Key.up)
                 field = (field + 3) % 4;
+            else if (field == 3)
+            {
+                beginDescriptionEdit();
+                handleDescriptionEdit(event);
+            }
             else
                 editText(fields[field], cursors[field], event, 4096);
 
@@ -725,7 +963,7 @@ private final class Workspace
             if (event.key == Key.escape || (event.key == Key.text && (event.text == "?" || event.text == "q")))
                 mode = Mode.browse;
             else if (event.key == Key.down || event.key == Key.pageDown)
-                helpOffset = min(max(0, 14 - listHeight), helpOffset + 1);
+                helpOffset = min(max(0, 17 - listHeight), helpOffset + 1);
             else if (event.key == Key.up || event.key == Key.pageUp)
                 helpOffset = max(0, helpOffset - 1);
 
@@ -783,6 +1021,7 @@ private final class Workspace
             case "G": selected = cast(int) visible.length - 1; break;
             case "n": beginEdit(false); break;
             case "e": beginEdit(true); break;
+            case "v": beginReader(); break;
             case "1": filter = "open"; selected = 0; break;
             case "2": filter = "today"; selected = 0; break;
             case "3": filter = "all"; selected = 0; break;
@@ -882,8 +1121,16 @@ private final class Workspace
             if (dragId != 0)
                 return;
 
-            if (mode == Mode.help)
-                helpOffset = max(0, min(max(0, 14 - listHeight), helpOffset + (event.button == 64 ? -1 : 1)));
+            if (mode == Mode.reader || ((mode == Mode.browse || mode == Mode.search)
+                && previewBody().contains(event.x, event.y)))
+                scrollDescription(event.button == 64 ? -3 : 3);
+            else if (mode == Mode.descriptionEdit)
+            {
+                draftOffset += event.button == 64 ? -3 : 3;
+                followDraftCursor = false;
+            }
+            else if (mode == Mode.help)
+                helpOffset = max(0, min(max(0, 17 - listHeight), helpOffset + (event.button == 64 ? -1 : 1)));
             else if (mode == Mode.browse || mode == Mode.search)
                 selected += event.button == 64 ? -3 : 3;
             else if (mode == Mode.calendar)
@@ -894,6 +1141,54 @@ private final class Workspace
 
         if (!left)
             return;
+
+        if (mode == Mode.reader || mode == Mode.descriptionEdit)
+        {
+            if (event.y == rows - 3)
+            {
+                if (event.x >= 3 && event.x <= 8)
+                {
+                    if (mode == Mode.reader)
+                        beginEdit(true);
+                    else
+                        saveForm();
+                }
+                else if (event.x >= 10 && event.x <= 15)
+                {
+                    if (mode == Mode.reader)
+                        mode = Mode.browse;
+                    else
+                    {
+                        mode = Mode.edit;
+                        status = "Description kept in draft. Save applies; Cancel discards.";
+                    }
+                }
+                else if (mode == Mode.descriptionEdit && event.x >= 17 && event.x <= 24)
+                    cancelEdit();
+            }
+            else if (event.y == rows - 5 && event.x >= 3 && event.x <= 13)
+            {
+                auto amount = event.x < 8 ? -3 : 3;
+
+                if (mode == Mode.reader)
+                    scrollDescription(amount);
+                else
+                {
+                    draftOffset += amount;
+                    followDraftCursor = false;
+                }
+            }
+            else if (mode == Mode.descriptionEdit && descriptionBody(columns, rows).contains(event.x, event.y))
+            {
+                auto body = descriptionBody(columns, rows);
+                auto lines = draftLines(fields[3], body.width - 1);
+                auto row = min(cast(int) lines.length - 1, draftOffset + event.y - body.y);
+                cursors[3] = draftCursorAt(fields[3], lines[row], event.x - body.x);
+                followDraftCursor = true;
+            }
+
+            return;
+        }
 
         if (mode == Mode.confirmDelete)
         {
@@ -980,6 +1275,8 @@ private final class Workspace
                 }
                 else if (field == 2 && event.x >= listWidth - 14)
                     beginCalendar();
+                else if (field == 3)
+                    beginDescriptionEdit();
             }
 
             return;
@@ -988,7 +1285,18 @@ private final class Workspace
         if (event.y != 6 && mode == Mode.search)
             mode = Mode.browse;
 
-        if (event.y == 5 && event.x >= 3 && event.x < 47)
+        auto panel = previewBody();
+
+        if (event.y == 4 && event.x >= columns - 10 && event.x <= columns - 2)
+            beginReader();
+        else if (panel.height > 0 && event.y == panel.y - 1 && event.x >= panel.x && event.x < panel.x + panel.width)
+        {
+            if (event.x >= panel.x + panel.width - 9)
+                beginReader();
+            else if (event.x >= panel.x + 15 && event.x < panel.x + 26)
+                scrollDescription(event.x < panel.x + 20 ? -3 : 3);
+        }
+        else if (event.y == 5 && event.x >= 3 && event.x < 47)
         {
             filter = filterValues[(event.x - 3) / 11];
             selected = 0;
