@@ -29,6 +29,7 @@ class TerminalSession:
         self.master, self.slave = pty.openpty()
         self.rows = rows
         self.columns = columns
+        fcntl.ioctl(self.slave, termios.FIONREAD, struct.pack("i", 0))
         self.original = termios.tcgetattr(self.slave)
         self.pending = b""
         self.frames: list[bytes] = []
@@ -125,6 +126,11 @@ class TerminalSession:
         self.assert_restored()
 
     def assert_restored(self) -> None:
+        # Darwin sets PENDIN when canonical mode is restored. FIONREAD lets
+        # the line discipline reprocess pending input and clear that transient
+        # bit without consuming input or changing any configured attributes.
+        # Compare every setting exactly after the same query used at startup.
+        fcntl.ioctl(self.slave, termios.FIONREAD, struct.pack("i", 0))
         restored = termios.tcgetattr(self.slave)
         assert restored == self.original, (
             f"Terminal settings were not restored: expected={self.original!r}; actual={restored!r}"
