@@ -205,6 +205,7 @@ def cli_checks(binary: str, root: Path) -> None:
     command(binary, data, "add", "Bad date", "--due", "2026-02-30", success=False)
     command(binary, data, "add", "Bad priority", "--priority", "impossible", success=False)
     command(binary, data, "done", "999999", success=False)
+    command(binary, data, "--data", "", "list", success=False)
     assert data.read_bytes() == before
 
     corrupt = root / "corrupt.json"
@@ -213,6 +214,42 @@ def cli_checks(binary: str, root: Path) -> None:
     assert corrupt.read_text(encoding="utf-8") == "{invalid"
     command(binary, data, success=False)  # Pipes are not interactive terminals.
     print("PASS: CLI persistence, sorting, completion, deletion, invalid input, corruption and non-TTY")
+
+def cli_option_checks(binary: str, root: Path) -> None:
+    data = root / "literal-options.json"
+    options = ("--help", "-h", "--version")
+
+    for option in options:
+        command(binary, data, "add", "Literal option value", "--notes", option)
+
+    tasks = json.loads(command(binary, data, "list", "--json").stdout)
+    assert tuple(task["notes"] for task in tasks) == options
+
+    environment = {
+        key: value for key, value in os.environ.items()
+        if key not in ("HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME")
+    }
+    unused = root / "unused.json"
+
+    for option in options:
+        result = subprocess.run(
+            [binary, "--data", str(unused), option],
+            env=environment, capture_output=True, text=True, timeout=10, check=False,
+        )
+        assert result.returncode == 0, (option, result.stderr)
+        assert result.stdout and not result.stderr
+
+    assert not unused.exists() and not unused.with_suffix(".json.lock").exists()
+
+    theme = root / "explicit-theme.json"
+    theme.write_text("{}", encoding="utf-8")
+    result = subprocess.run(
+        [binary, "--data", str(data), "--theme", str(theme), "list", "--json"],
+        env=environment, capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == tasks
+    print("PASS: literal option values, independent help/version and explicit paths without HOME")
 
 def tui_checks(binary: str, root: Path, evidence: Path) -> None:
     data = root / "tui.json"
@@ -724,6 +761,7 @@ def main() -> None:
         evidence = Path(os.environ.get("DTASK_EVIDENCE_DIR", str(root / "captures")))
         evidence.mkdir(parents=True, exist_ok=True)
         cli_checks(binary, root)
+        cli_option_checks(binary, root)
         tui_checks(binary, root, evidence)
         mouse_checks(binary, root, evidence)
         theme_checks(binary, root, evidence)

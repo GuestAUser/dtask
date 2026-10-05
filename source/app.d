@@ -21,7 +21,7 @@ int main(string[] args)
 {
     try
     {
-        string dataPath = defaultDataPath();
+        string dataPath;
         string themePath;
         string[] positional;
         string due;
@@ -30,27 +30,21 @@ int main(string[] args)
         bool json;
         bool all;
 
-        foreach (size_t index; 1 .. args.length)
-        {
-            if (args[index] == "--help" || args[index] == "-h")
-            {
-                printHelp();
-                return 0;
-            }
-
-            if (args[index] == "--version")
-            {
-                writeln("dtask 1.0.0");
-                return 0;
-            }
-        }
-
         for (size_t index = 1; index < args.length; ++index)
         {
             auto argument = args[index];
 
             switch (argument)
             {
+                case "--help":
+                case "-h":
+                    printHelp();
+                    return 0;
+
+                case "--version":
+                    writeln("dtask 1.0.0");
+                    return 0;
+
                 case "--data":
                 case "--theme":
                 case "--priority":
@@ -61,7 +55,11 @@ int main(string[] args)
 
                     switch (argument)
                     {
-                        case "--data": dataPath = value; break;
+                        case "--data":
+                            enforce(value.length > 0, "--data requires a nonempty path");
+                            dataPath = value;
+                            break;
+
                         case "--theme": themePath = value; break;
                         case "--priority": priority = parsePriority(value); break;
                         case "--due": due = normalizeDue(value); break;
@@ -80,7 +78,8 @@ int main(string[] args)
             }
         }
 
-        enforce(dataPath.length > 0, "--data requires a nonempty path");
+        if (dataPath.length == 0)
+            dataPath = defaultDataPath();
 
         if (themePath.length == 0 && exists(defaultThemePath()))
         {
@@ -90,7 +89,6 @@ int main(string[] args)
         auto theme = loadTheme(themePath);
         auto store = new TaskStore(dataPath);
         scope (exit) store.close();
-        store.load();
 
         if (positional.length == 0)
         {
