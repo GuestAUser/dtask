@@ -907,6 +907,10 @@ private final class Workspace
         const height = rows - 9;
         auto first = wrapHelpRows(wide ? left : left ~ [HelpRow("", "")] ~ right, columnWidth);
         auto second = wide ? wrapHelpRows(right, columnWidth) : null;
+
+        if (wide)
+            alignHelpColumns(first, second);
+
         helpLength = cast(int) max(first.length, second.length);
         scrollHelp(0);
 

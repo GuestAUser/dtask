@@ -33,6 +33,34 @@ HelpRow[] wrapHelpRows(scope const(HelpRow)[] entries, int width)
     return result;
 }
 
+/** Give paired, already-wrapped help sections the same height in both columns. */
+void alignHelpColumns(ref HelpRow[] left, ref HelpRow[] right)
+{
+    size_t start;
+
+    while (start < left.length && start < right.length)
+    {
+        auto leftEnd = start + 1;
+        auto rightEnd = start + 1;
+
+        while (leftEnd < left.length && !left[leftEnd].heading)
+            ++leftEnd;
+
+        while (rightEnd < right.length && !right[rightEnd].heading)
+            ++rightEnd;
+
+        const end = max(leftEnd, rightEnd);
+
+        if (leftEnd < end)
+            left = left[0 .. leftEnd] ~ new HelpRow[end - leftEnd] ~ left[leftEnd .. $];
+
+        if (rightEnd < end)
+            right = right[0 .. rightEnd] ~ new HelpRow[end - rightEnd] ~ right[rightEnd .. $];
+
+        start = end;
+    }
+}
+
 /** Reserve unused workspace for a preview, without moving row eight or dates. */
 int taskListHeight(int columns, int rows, int count)
 {

@@ -6,6 +6,67 @@ import dtask.text : textWidth;
 
 unittest
 {
+    const leftEntries = [
+        HelpRow("", "A", true),
+        HelpRow("a", "A longer description that wraps across multiple rows at narrow widths."),
+        HelpRow("", ""),
+        HelpRow("", "B", true),
+        HelpRow("b", "Short"),
+        HelpRow("", ""),
+        HelpRow("", "C", true),
+        HelpRow("c", "Final left entry")
+    ];
+    const rightEntries = [
+        HelpRow("", "D", true),
+        HelpRow("d", "Short"),
+        HelpRow("", ""),
+        HelpRow("", "E", true),
+        HelpRow("e", "A longer description that wraps across multiple rows at narrow widths."),
+        HelpRow("f", "Another entry"),
+        HelpRow("", ""),
+        HelpRow("", "F", true)
+    ];
+
+    foreach (width; [44, 56])
+    {
+        auto left = wrapHelpRows(leftEntries, width);
+        auto right = wrapHelpRows(rightEntries, width);
+        auto originalLeft = left.dup;
+        auto originalRight = right.dup;
+        alignHelpColumns(left, right);
+        assert(left.length == right.length);
+        size_t headings;
+
+        foreach (index, row; left)
+        {
+            assert(row.heading == right[index].heading);
+            headings += row.heading;
+        }
+
+        assert(headings == 3);
+
+        /* Padding must preserve every original row in order. */
+        foreach (column; 0 .. 2)
+        {
+            auto original = column == 0 ? originalLeft : originalRight;
+            auto aligned = column == 0 ? left : right;
+            size_t cursor;
+
+            foreach (row; aligned)
+            {
+                if (cursor < original.length && row == original[cursor])
+                    ++cursor;
+                else
+                    assert(row == HelpRow.init);
+            }
+
+            assert(cursor == original.length);
+        }
+    }
+}
+
+unittest
+{
     const entries = [
         HelpRow("", "A section heading", true),
         HelpRow("Ctrl-U", "A long description that must wrap onto aligned continuation rows."),
