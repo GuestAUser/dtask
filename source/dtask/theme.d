@@ -49,18 +49,18 @@ Theme defaultTheme()
     Theme theme;
 
     theme.name = "Midnight";
-    theme.background = "#0D1117";
-    theme.panel = "#161B22";
-    theme.foreground = "#E6EDF3";
-    theme.muted = "#8B949E";
-    theme.accent = "#79C0FF";
-    theme.selected = "#22334A";
-    theme.border = "#30363D";
-    theme.urgent = "#FF7B72";
-    theme.high = "#FFA657";
-    theme.normal = "#79C0FF";
-    theme.low = "#8B949E";
-    theme.success = "#7EE787";
+    theme.background = "#09141D";
+    theme.panel = "#10232E";
+    theme.foreground = "#E8F2EF";
+    theme.muted = "#93ADBA";
+    theme.accent = "#69DCCB";
+    theme.selected = "#1C3B49";
+    theme.border = "#345362";
+    theme.urgent = "#F28B82";
+    theme.high = "#E7BB78";
+    theme.normal = "#86C7DE";
+    theme.low = "#B0A0CE";
+    theme.success = "#8DD6A8";
 
     return theme;
 }
@@ -196,6 +196,25 @@ string foreground(string hex)
 string background(string hex)
 {
     return colorSequence(hex, 48);
+}
+
+/** Interpolate validated palette colors without changing geometry or glyphs. */
+string blend(string from, string to, double amount)
+{
+    import std.algorithm : min, max;
+
+    amount = max(0.0, min(1.0, amount));
+    uint[3] channels;
+
+    foreach (index; 0 .. 3)
+    {
+        const offset = 1 + index * 2;
+        const start = 16 * hexDigit(from[offset]) + hexDigit(from[offset + 1]);
+        const end = 16 * hexDigit(to[offset]) + hexDigit(to[offset + 1]);
+        channels[index] = cast(uint) (start * (1.0 - amount) + end * amount + 0.5);
+    }
+
+    return format("#%02X%02X%02X", channels[0], channels[1], channels[2]);
 }
 
 /** ANSI SGR sequence restoring default colors and text attributes. */

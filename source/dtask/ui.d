@@ -4,10 +4,14 @@ import dtask.model;
 import dtask.terminal;
 import dtask.theme;
 import dtask.widgets;
+import dtask.motion;
+import dtask.visuals;
 import dtask.text : wrapText, textWidth;
+import core.time : MonoTime;
 import std.algorithm : min, max;
 import std.conv : to;
 import std.datetime : Date;
+import std.process : environment;
 import std.string : strip, replace;
 
 private enum Mode { browse, search, edit, descriptionEdit, reader, calendar, confirmDelete, help }
@@ -79,6 +83,14 @@ private final class Workspace
     Date calendarMonth;
     bool calendarDraft;
     ulong calendarId;
+    Motion motion;
+    long visualTime;
+    string[] paintedRows;
+    string[] previousRows;
+    int paintedColumns;
+    int paintedHeight;
+    double[ulong] focusFrom;
+    double[6] scheduleFrom = [0, 0, 0, 0, 0, 0];
 
     this(TaskStore store, Terminal terminal, Theme theme, string themePath)
     {
@@ -90,16 +102,59 @@ private final class Workspace
 
     void run()
     {
+        const origin = MonoTime.currTime;
+        motion.enabled = environment.get("DTASK_REDUCED_MOTION", "") != "1";
+        motion.start(0);
+        bool dirty = true;
+        uint lastFrame;
+
         while (running)
         {
             terminal.size(columns, rows);
-            refresh();
-            render();
+            visualTime = (MonoTime.currTime - origin).total!"msecs";
+            const animate = mode != Mode.edit && mode != Mode.descriptionEdit && mode != Mode.search;
 
-            auto event = terminal.readEvent();
+            if (dirty)
+            {
+                refresh();
+                render();
+                dirty = false;
+                lastFrame = motion.frame(visualTime);
+            }
 
-            while (event.key == Key.none)
-                event = terminal.readEvent();
+            auto event = terminal.readEvent(animate ? motion.waitMillis(visualTime) : 100);
+            visualTime = (MonoTime.currTime - origin).total!"msecs";
+
+            if (event.key == Key.none)
+            {
+                auto nextFrame = motion.frame(visualTime);
+
+                if (animate && nextFrame != lastFrame)
+                {
+                    render(false);
+                    lastFrame = nextFrame;
+                }
+
+                continue;
+            }
+
+            auto oldTask = current();
+            const oldId = oldTask is null ? 0 : oldTask.id;
+            const oldMode = mode;
+            const oldStatus = status;
+            const oldTarget = dropTarget;
+            const oldFilter = filter;
+            double[ulong] currentFocus;
+            double[6] currentSchedule;
+
+            foreach (index; offset .. min(cast(int) visible.length, offset + listHeight))
+            {
+                auto id = store.tasks[visible[index]].id;
+                currentFocus[id] = focusLevel(id);
+            }
+
+            foreach (index; 0 .. 6)
+                currentSchedule[index] = scheduleLevel(index);
 
             try
             {
@@ -109,7 +164,39 @@ private final class Workspace
             {
                 status = "Error: " ~ error.msg;
             }
+
+            if (!running)
+                break;
+
+            refresh();
+            auto newTask = current();
+            const newId = newTask is null ? 0 : newTask.id;
+
+            if (mode != Mode.edit && mode != Mode.descriptionEdit && mode != Mode.search
+                && (oldId != newId || oldMode != mode || oldStatus != status
+                    || oldTarget != dropTarget || oldFilter != filter))
+            {
+                focusFrom = currentFocus;
+                scheduleFrom = currentSchedule;
+                motion.start(visualTime);
+            }
+
+            dirty = true;
         }
+    }
+
+    double focusLevel(ulong id)
+    {
+        auto task = current();
+        const target = task !is null && task.id == id ? 1.0 : 0.0;
+        const start = focusFrom.get(id, 0.0);
+        return start + (target - start) * motion.progress(visualTime);
+    }
+
+    double scheduleLevel(int index)
+    {
+        const target = dragging && dropTarget == index ? 1.0 : 0.0;
+        return scheduleFrom[index] + (target - scheduleFrom[index]) * motion.progress(visualTime);
     }
 
     void refresh(ulong preferId = 0)
@@ -173,14 +260,19 @@ private final class Workspace
 
     void line(ref string frame, int row, string content)
     {
-        frame ~= "\x1b[" ~ to!string(row) ~ ";1H"
+        auto command = "\x1b[" ~ to!string(row) ~ ";1H"
             ~ background(theme.background) ~ foreground(theme.foreground) ~ content
             ~ background(theme.background) ~ "\x1b[K";
+        frame ~= command;
+        paintedRows[row - 1] = command;
     }
 
     void at(ref string frame, int x, int y, string text, int width, string color, string surface = "")
     {
-        frame ~= "\x1b[" ~ to!string(y) ~ ";" ~ to!string(x) ~ "H" ~ ink(color, fit(text, width), surface);
+        auto command = "\x1b[" ~ to!string(y) ~ ";" ~ to!string(x) ~ "H"
+            ~ ink(color, fit(text, width), surface);
+        frame ~= command;
+        paintedRows[y - 1] ~= command;
     }
 
     /*
@@ -188,10 +280,18 @@ private final class Workspace
      * widths are respected. Controls use the same rectangles as hit testing.
      * Compact layouts keep the five date targets above the bottom toolbar.
      */
-    void render()
+    void render(bool full = true)
     {
         string frame = "\x1b[?25l";
+        paintedRows = new string[rows];
         caretY = 0;
+        const resized = paintedColumns != columns || paintedHeight != rows;
+
+        if (resized)
+        {
+            frame ~= "\x1b[2J";
+            full = true;
+        }
 
         if (columns < 48 || rows < 20)
         {
@@ -204,15 +304,15 @@ private final class Workspace
             if (rows >= 3)
                 line(frame, rows, "");
 
-            terminal.write(frame ~ reset);
+            terminal.write("\x1b[?2026h" ~ frame ~ "\x1b[?2026l" ~ reset);
+            previousRows = paintedRows;
+            paintedColumns = columns;
+            paintedHeight = rows;
             return;
         }
 
         for (int row = 1; row <= rows; ++row)
             line(frame, row, "");
-
-        line(frame, 1, ink(theme.accent, fit("  dtask", columns - 26))
-            ~ ink(theme.muted, fit(todayISO() ~ "  /  " ~ theme.name, 26)));
 
         size_t openCount;
         size_t completedCount;
@@ -231,25 +331,28 @@ private final class Workspace
             }
         }
 
-        auto summary = "  " ~ to!string(openCount) ~ " open   " ~ to!string(overdueCount)
-            ~ " overdue   " ~ to!string(completedCount) ~ " completed";
-        line(frame, 3, ink(theme.muted, fit(summary, columns)));
+        renderHeader(frame, openCount, completedCount, overdueCount);
 
         auto task = current();
 
         if (task !is null)
         {
             auto detail = "  #" ~ to!string(task.id) ~ " / " ~ priorityLabel(task.priority)
-                ~ " / " ~ (task.due.length ? task.due : "no date");
-            line(frame, 4, ink(theme.muted, fit(detail, columns - 12)));
+                ~ " / " ~ (task.due.length ? task.due : "no date")
+                ~ "   " ~ to!string(selected + 1) ~ "/" ~ to!string(visible.length);
+            line(frame, 4, ink(theme.muted, fit(detail, columns - 22)));
             at(frame, columns - 10, 4, "[Details]", 9, theme.accent);
         }
+
+        at(frame, columns - 20, 4, motion.enabled ? "[FX:on]" : "[FX:off]", 8,
+            motion.enabled ? theme.accent : theme.muted);
+        line(frame, 5, ink(theme.muted, fit("", columns), theme.panel));
 
         foreach (index, label; tabLabels)
         {
             auto active = filterValues[index] == filter;
             at(frame, 3 + cast(int) index * 11, 5, label, 11,
-                active ? theme.accent : theme.muted, active ? theme.selected : theme.background);
+                active ? theme.foreground : theme.muted, active ? theme.selected : theme.panel);
         }
 
         string searchText;
@@ -285,7 +388,10 @@ private final class Workspace
         }
 
         if (mode != Mode.calendar)
-            line(frame, rows - 4, ink(theme.border, fit("  " ~ repeat("-", columns - 4), columns)));
+        {
+            auto separator = "  " ~ repeat("-", columns - 4);
+            line(frame, rows - 4, ink(theme.border, fit(separator, columns)));
+        }
 
         string actions;
 
@@ -302,9 +408,19 @@ private final class Workspace
         else
             actions = "  [New] [Edit] [Done] [Date] [Del] [Help] [Quit]";
 
-        line(frame, rows - 3, ink(theme.accent, fit(actions, columns)));
+        line(frame, rows - 3, ink(mode == Mode.confirmDelete ? theme.urgent : theme.accent,
+            fit(actions, columns)));
+
+        if (mode == Mode.browse || mode == Mode.search)
+        {
+            at(frame, 3, rows - 3, "[New]", 5, theme.background, theme.accent);
+            at(frame, 16, rows - 3, "[Done]", 6, theme.success);
+            at(frame, 30, rows - 3, "[Del]", 5, theme.urgent);
+        }
+
+        auto statusColor = blend(theme.foreground, theme.muted, motion.progress(visualTime));
         line(frame, rows - 2, ink(status.length >= 6 && status[0 .. 6] == "Error:"
-            ? theme.urgent : theme.muted, fit("  " ~ status, columns)));
+            ? theme.urgent : statusColor, fit("  " ~ status, columns)));
 
         auto footer = mode == Mode.descriptionEdit ? "  Enter: newline | Tab: back | Esc: cancel"
             : mode == Mode.reader ? "  Wheel/PgUp/PgDn/Home/End | Esc: back"
@@ -313,18 +429,57 @@ private final class Workspace
             : mode == Mode.calendar ? "  Click a day | Esc: back, no date change"
             : mode == Mode.help ? "  Wheel/Up/Down: scroll | Esc: back"
             : mode == Mode.confirmDelete ? "  Delete task #" ~ to!string(deletingId) ~ "? y / Esc"
-            : "  v: details | / search | ? help | q quit";
+            : "  v details | / search | m effects | q quit";
         line(frame, rows - 1, ink(theme.muted, fit(footer, columns), theme.panel));
         line(frame, rows, "");
+
+        /*
+         * Input frames remain complete for deterministic interaction feedback.
+         * Animation frames repaint only changed rows; no re-sort, clear-screen,
+         * or task mutation occurs on a visual tick.
+         */
+        if (!full)
+        {
+            frame = "\x1b[?25l";
+
+            foreach (index, commands; paintedRows)
+            {
+                if (index >= previousRows.length || commands != previousRows[index])
+                    frame ~= commands;
+            }
+
+            /* Keep a stable completion boundary, even on a zero-change tick. */
+            frame ~= paintedRows[$ - 1];
+        }
 
         if (caretY > 0)
             frame ~= "\x1b[" ~ to!string(caretY) ~ ";" ~ to!string(caretX) ~ "H\x1b[?25h";
 
-        terminal.write(frame ~ reset);
+        terminal.write("\x1b[?2026h" ~ frame ~ "\x1b[?2026l" ~ reset);
+        previousRows = paintedRows;
+        paintedColumns = columns;
+        paintedHeight = rows;
+    }
+
+    void renderHeader(ref string frame, size_t openCount, size_t completedCount, size_t overdueCount)
+    {
+        auto brandColor = blend(theme.foreground, theme.accent, motion.progress(visualTime));
+        line(frame, 1, ink(brandColor, fit("  dtask_", columns - 26))
+            ~ ink(theme.muted, fit(todayISO() ~ " / " ~ theme.name, 26)));
+        auto summary = "  " ~ to!string(openCount) ~ " open   " ~ to!string(overdueCount)
+            ~ " overdue   " ~ to!string(completedCount) ~ " done";
+        line(frame, 3, ink(theme.muted, fit(summary, columns)));
+
+        if (columns >= 78)
+            at(frame, columns - 18, 3, progressMeter(completedCount, store.tasks.length, 16), 16, theme.success);
     }
 
     void renderTasks(ref string frame)
     {
+        at(frame, 3, 7, "TASKS / " ~ to!string(visible.length), listWidth - 25, theme.muted);
+        at(frame, listWidth - 21, 7, "PRIORITY", 9, theme.muted);
+        at(frame, listWidth - 12, 7, "DUE DATE", 12, theme.muted);
+
         for (int row = 0; row < listHeight; ++row)
         {
             auto index = offset + row;
@@ -333,21 +488,29 @@ private final class Workspace
             {
                 auto task = store.tasks[visible[index]];
                 auto surface = task.id == dragId && dragging ? theme.panel
-                    : index == selected ? theme.selected : theme.background;
+                    : blend(theme.background, theme.selected, focusLevel(task.id));
                 auto color = task.completed ? theme.muted : theme.foreground;
                 auto dueColor = task.due.length && daysUntil(task.due) < 0 && !task.completed
                     ? theme.urgent : theme.muted;
-                auto content = ink(color, "  ")
+                auto marker = index == selected ? "> " : "  ";
+                auto content = ink(mode == Mode.confirmDelete ? theme.urgent : theme.accent, marker, surface)
                     ~ ink(index == selected ? theme.accent : theme.muted, task.completed ? "[x] " : "[ ] ", surface)
                     ~ ink(color, fit(task.title, listWidth - 28), surface)
                     ~ ink(priorityColor(task.priority), fit(" " ~ priorityLabel(task.priority), 9), surface)
                     ~ ink(dueColor, fit(task.due.length ? task.due : "no date", 12), surface);
                 line(frame, 8 + row, content);
             }
-            else if (row == 1 && visible.length == 0)
-                line(frame, 8 + row, ink(theme.foreground, fit("  Nothing here yet. Click New.", listWidth)));
-            else if (row == 2 && visible.length == 0 && query.length)
-                line(frame, 8 + row, ink(theme.muted, fit("  Try another search or view.", listWidth)));
+        }
+
+        if (visible.length == 0)
+        {
+            auto row = 8 + min(1, max(0, listHeight - 2));
+            at(frame, 3, row, query.length ? "No matching tasks." : "A clear runway. Make your next move.",
+                listWidth - 4, theme.foreground);
+
+            if (row + 1 < 8 + listHeight)
+                at(frame, 3, row + 1, query.length ? "Clear the search or try another view."
+                    : "Click New or press n to capture a task.", listWidth - 4, theme.muted);
         }
 
         auto panel = previewBody();
@@ -398,7 +561,8 @@ private final class Workspace
         {
             auto index = descriptionOffset + row;
             at(frame, body.x, body.y + row, index < lines.length ? lines[index] : "",
-                body.width, theme.foreground, theme.panel);
+                body.width, index < lines.length && lines[index] == "DESCRIPTION"
+                    ? theme.accent : theme.foreground, theme.panel);
         }
 
         /* Inline controls share the heading; full reader controls have their own row. */
@@ -514,7 +678,7 @@ private final class Workspace
         {
             auto cell = scheduleCell(columns, rows, index, calendar);
             const highlighted = dragging && dropTarget == index;
-            auto surface = highlighted ? theme.selected : theme.panel;
+            auto surface = blend(theme.panel, theme.selected, scheduleLevel(index));
             const label = index == 5 && calendar ? "Back" : scheduleLabels[index];
             auto color = highlighted ? theme.success : theme.accent;
             auto title = "[" ~ label ~ "]";
@@ -582,7 +746,7 @@ private final class Workspace
         foreach (index, label; fieldLabels)
         {
             auto active = field == index;
-            auto surface = active ? theme.selected : theme.background;
+            auto surface = active ? theme.selected : theme.panel;
             auto row = 9 + cast(int) index;
             at(frame, 3, row, label ~ ":", 10, active ? theme.accent : theme.muted, surface);
 
@@ -692,6 +856,7 @@ private final class Workspace
             "Text: arrows, Home/End, Delete, Ctrl-U",
             "Dates: today, tomorrow, next week, +3d",
             "Next week is next Monday; weekend Saturday.",
+            "m / FX: toggle motion; editing pauses effects",
             "r: reload theme | q: quit | Esc: back"
         ];
 
@@ -1004,7 +1169,7 @@ private final class Workspace
             if (event.key == Key.escape || (event.key == Key.text && (event.text == "?" || event.text == "q")))
                 mode = Mode.browse;
             else if (event.key == Key.down || event.key == Key.pageDown)
-                helpOffset = min(max(0, 17 - listHeight), helpOffset + 1);
+                helpOffset = min(max(0, 18 - listHeight), helpOffset + 1);
             else if (event.key == Key.up || event.key == Key.pageUp)
                 helpOffset = max(0, helpOffset - 1);
 
@@ -1104,6 +1269,11 @@ private final class Workspace
                 theme = loadTheme(themePath);
                 status = "Theme reloaded: " ~ theme.name ~ ".";
                 break;
+            case "m":
+                motion.enabled = !motion.enabled;
+                status = motion.enabled ? "Effects enabled. Editing stays still."
+                    : "Reduced motion. Effects disabled for this session.";
+                break;
             default: break;
         }
     }
@@ -1111,6 +1281,14 @@ private final class Workspace
     void handleMouse(Event event)
     {
         const left = (event.button & 3) == 0 && event.button < 64;
+
+        if (left && !event.release && !event.motion && event.y == 4
+            && event.x >= columns - 20 && event.x < columns - 12)
+        {
+            clearDrag();
+            action("m");
+            return;
+        }
 
         if (dragId != 0 && left)
         {
@@ -1171,7 +1349,7 @@ private final class Workspace
                 followDraftCursor = false;
             }
             else if (mode == Mode.help)
-                helpOffset = max(0, min(max(0, 17 - listHeight), helpOffset + (event.button == 64 ? -1 : 1)));
+                helpOffset = max(0, min(max(0, 18 - listHeight), helpOffset + (event.button == 64 ? -1 : 1)));
             else if (mode == Mode.browse || mode == Mode.search)
                 selected += event.button == 64 ? -3 : 3;
             else if (mode == Mode.calendar)

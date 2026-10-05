@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import termios
+from time import monotonic
 import unicodedata
 from contextlib import contextmanager
 from collections.abc import Iterator
@@ -25,7 +26,10 @@ from collections.abc import Iterator
 class TerminalSession:
     """Own a real PTY and subscribe to complete frames before sending input."""
 
-    def __init__(self, binary: str, data: Path, columns: int, rows: int, theme: Path | None = None) -> None:
+    def __init__(
+        self, binary: str, data: Path, columns: int, rows: int,
+        theme: Path | None = None, reduced_motion: bool = True,
+    ) -> None:
         self.master, self.slave = pty.openpty()
         self.rows = rows
         self.columns = columns
@@ -33,6 +37,7 @@ class TerminalSession:
         self.original = termios.tcgetattr(self.slave)
         self.pending = b""
         self.frames: list[bytes] = []
+        self.latest_full = b""
         self.selector = selectors.DefaultSelector()
         self.selector.register(self.master, selectors.EVENT_READ)
         self.resize(columns, rows)
@@ -44,7 +49,10 @@ class TerminalSession:
             stdin=self.slave,
             stdout=self.slave,
             stderr=self.slave,
-            env={**os.environ, "TERM": "xterm-256color", "LC_ALL": "C.UTF-8"},
+            env={
+                **os.environ, "TERM": "xterm-256color", "LC_ALL": "C.UTF-8",
+                "DTASK_REDUCED_MOTION": "1" if reduced_motion else "0",
+            },
         )
         self.frame()
 
@@ -53,7 +61,7 @@ class TerminalSession:
         self.rows = rows
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
 
-    def frame(self) -> bytes:
+    def frame(self, full: bool = True) -> bytes:
         """A full final row plus reset is the renderer's completion boundary."""
         marker = f"\x1b[{self.rows};1H".encode()
 
@@ -64,6 +72,16 @@ class TerminalSession:
             if end >= 0:
                 result = self.pending[: end + 4]
                 self.pending = self.pending[end + 4 :]
+                complete = all(
+                    f"\x1b[{row};1H".encode() in result
+                    for row in range(1, self.rows + 1)
+                ) or self.columns < 48 or self.rows < 20
+
+                if complete:
+                    self.latest_full = result
+                elif full:
+                    continue
+
                 self.frames.append(result)
                 return result
 
@@ -95,7 +113,7 @@ class TerminalSession:
 
     def cell(self, label: str, min_row: int = 1) -> tuple[int, int]:
         """Locate a visible mouse target in the latest actual rendered frame."""
-        rows = re.split(rb"\x1b\[(\d+);(\d+)H", self.frames[-1])
+        rows = re.split(rb"\x1b\[(\d+);(\d+)H", self.latest_full)
         for index in range(1, len(rows), 3):
             row = int(rows[index])
             column = int(rows[index + 1])
@@ -145,8 +163,11 @@ class TerminalSession:
         os.close(self.slave)
 
 @contextmanager
-def terminal(binary: str, data: Path, columns: int = 120, rows: int = 32, theme: Path | None = None) -> Iterator[TerminalSession]:
-    session = TerminalSession(binary, data, columns, rows, theme)
+def terminal(
+    binary: str, data: Path, columns: int = 120, rows: int = 32,
+    theme: Path | None = None, reduced_motion: bool = True,
+) -> Iterator[TerminalSession]:
+    session = TerminalSession(binary, data, columns, rows, theme, reduced_motion)
     try:
         yield session
     finally:
@@ -598,6 +619,63 @@ def caret_rendering_checks(binary: str, root: Path, evidence: Path) -> None:
     assert task["title"] == title and task["notes"] == "regression baselines"
     print("PASS: native edit cursor preserves text cells and Unicode positioning")
 
+def motion_checks(binary: str, root: Path, evidence: Path) -> None:
+    """Visual ticks are observable, incremental, read-only, and suppressible."""
+    for columns, rows in [(48, 20), (80, 24), (120, 40)]:
+        data = root / f"motion-{columns}.json"
+        command(binary, data, "add", "Motion must not mutate this task", "--notes", "Keep the store unchanged")
+        command(binary, data, "add", "Second focus target")
+        original = data.read_bytes()
+
+        with terminal(binary, data, columns, rows, reduced_motion=False) as session:
+            initial = session.frames[-1]
+            ticks: list[bytes] = []
+            colors: list[tuple[int, ...]] = []
+            deadline = monotonic() + 3
+
+            while not colors or colors[-1] != (28, 59, 73):
+                assert monotonic() < deadline, "Focus transition did not settle"
+                tick = session.frame(full=False)
+                ticks.append(tick)
+                row = re.search(rb"\x1b\[8;1H(.*?)(?=\x1b\[\d+;\d+H)", tick, re.S)
+                if row:
+                    backgrounds = re.findall(rb"\x1b\[48;2;(\d+);(\d+);(\d+)m", row[1])
+                    colors.append(tuple(map(int, backgrounds[1])))
+
+            assert len(set(colors)) > 1, "Focus snapped instead of easing"
+            assert all(a[0] <= b[0] for a, b in zip(colors, colors[1:]))
+            assert all(len(tick) < len(initial) // 2 for tick in ticks)
+            assert all(b"\x1b[?2026h" in tick and b"\x1b[?2026l" in tick for tick in ticks)
+            assert data.read_bytes() == original
+            evidence.joinpath(f"animation-{columns}.ansi").write_bytes(initial + b"".join(ticks))
+
+            # Interrupt an active transition with another selection. Input is
+            # acknowledged as a complete frame, never queued behind animation.
+            session.send("j")
+            session.frame(full=False)
+            frame = session.send("k")
+            assert b"> " in frame
+            session.send("m")
+            # The absence of timed output is the behavior under test. Subscribe
+            # after the input frame acknowledges disabling motion; do not sleep.
+            assert not session.pending
+            assert not session.selector.select(timeout=0.3), "Reduced motion emitted an idle frame"
+            session.click("[FX:off]")
+            session.frame(full=False)
+            session.send("n")
+            assert not session.pending
+            assert not session.selector.select(timeout=0.3), "Editing did not pause animation"
+            session.send("\x1b")
+            session.resize(columns + 1, rows + 1)
+            os.kill(session.process.pid, signal.SIGWINCH)
+            session.frame()
+            session.send("m")
+            session.finish()
+
+        assert data.read_bytes() == original
+
+    print("PASS: eased focus, interrupted input, incremental synchronized frames, reduced motion and resize")
+
 def main() -> None:
     binary = str(Path(sys.argv[1]).resolve())
 
@@ -615,6 +693,7 @@ def main() -> None:
         description_checks(binary, root, evidence)
         cursor_boundary_checks(binary, root)
         caret_rendering_checks(binary, root, evidence)
+        motion_checks(binary, root, evidence)
 
     print("PASS: all integration checks")
 

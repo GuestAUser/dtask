@@ -1,6 +1,97 @@
-module terminal_test;
+module dtask.terminal_test;
 
-import dtask.terminal : Event, InputDecoder, Key, Terminal, fit;
+import core.time : MonoTime, dur;
+import dtask.terminal : Event, InputDecoder, InputTiming, Key, Terminal, fit;
+
+private MonoTime moment(long milliseconds)
+{
+    return MonoTime.zero + dur!"msecs"(milliseconds);
+}
+
+unittest
+{
+    InputTiming input;
+    input.beginWait(10, moment(0));
+    assert(input.feed(0x1b, moment(0)).key == Key.none);
+    assert(input.waitMillis(moment(0)) == 10);
+    assert(input.renderDue(moment(10)));
+    assert(input.expireEscape(moment(10)).key == Key.none);
+
+    input.beginWait(10, moment(10));
+    assert(input.expireEscape(moment(20)).key == Key.none);
+    input.beginWait(100, moment(20));
+    assert(input.waitMillis(moment(20)) == 15);
+    const justBefore = moment(35) - dur!"usecs"(1);
+    assert(input.waitMillis(justBefore) == 1);
+    assert(input.expireEscape(justBefore).key == Key.none);
+    assert(input.expireEscape(moment(35)).key == Key.escape);
+    assert(input.expireEscape(moment(36)).key == Key.none);
+
+    /* A repeated Escape restarts only its grace, not the visual budget. */
+    input.beginWait(40, moment(100));
+    input.feed(0x1b, moment(100));
+    input.feed(0x1b, moment(130));
+    assert(input.waitMillis(moment(139)) == 1);
+    assert(input.renderDue(moment(140)));
+    assert(input.expireEscape(moment(140)).key == Key.none);
+    input.beginWait(100, moment(140));
+    assert(input.waitMillis(moment(140)) == 25);
+    assert(input.expireEscape(moment(165)).key == Key.escape);
+}
+
+unittest
+{
+    InputTiming input;
+    input.beginWait(1, moment(0));
+    input.feed(0x1b, moment(0));
+    assert(input.expireEscape(moment(1)).key == Key.none);
+    input.beginWait(1, moment(1));
+    input.feed('[', moment(1));
+    assert(input.expireEscape(moment(100)).key == Key.none);
+    assert(input.feed('A', moment(100)) == Event(Key.up));
+
+    /* Render boundaries neither flush UTF-8 nor terminate bracketed paste. */
+    input.feed(0xe4, moment(101));
+    assert(input.renderDue(moment(102)));
+    assert(input.expireEscape(moment(200)).key == Key.none);
+    input.beginWait(0, moment(200));
+    assert(input.waitMillis(moment(200)) == 0);
+    assert(input.feed(0xb8, moment(200)).key == Key.none);
+    assert(input.feed(0xad, moment(200)) == Event(Key.text, "\u4e2d"));
+
+    foreach (ubyte value; cast(const(ubyte)[]) "\x1b[200~hello\x1b")
+        assert(input.feed(value, moment(201)).key == Key.none);
+
+    input.beginWait(10, moment(201));
+    assert(input.expireEscape(moment(300)).key == Key.none);
+    Event pasted;
+    foreach (ubyte value; cast(const(ubyte)[]) "[201~")
+        pasted = input.feed(value, moment(300));
+
+    assert(pasted.key == Key.text && pasted.text == "hello" && pasted.pasted);
+}
+
+unittest
+{
+    InputTiming input;
+    input.beginWait(40, moment(0));
+    input.feed(0x1b, moment(0));
+    input.feed('[', moment(0));
+
+    /* Busy quarantined input cannot restart or postpone the render deadline. */
+    foreach (now; 0 .. 40)
+    {
+        assert(input.feed('1', moment(now)).key == Key.none);
+        assert(input.waitMillis(moment(now)) == 40 - now);
+    }
+
+    assert(input.renderDue(moment(40)));
+    assert(input.waitMillis(moment(40)) == 0);
+    assert(input.expireEscape(moment(40)).key == Key.none);
+    input.beginWait(40, moment(40));
+    assert(input.feed('m', moment(40)).key == Key.none);
+    assert(input.feed('q', moment(40)) == Event(Key.text, "q"));
+}
 
 private Event[] decode(string input)
 {

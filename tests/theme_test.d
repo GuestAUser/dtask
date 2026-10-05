@@ -11,6 +11,16 @@ import std.process : environment;
 import std.string : fromStringz, indexOf;
 import std.traits : FieldNameTuple;
 
+unittest
+{
+    assert(blend("#000000", "#FFFFFF", 0) == "#000000");
+    assert(blend("#000000", "#FFFFFF", 1) == "#FFFFFF");
+    assert(blend("#000000", "#FFFFFF", 0.5) == "#808080");
+    assert(blend("#FF0000", "#0000FF", 0.5) == "#800080");
+    assert(blend("#abcdef", "#123456", -1) == "#ABCDEF");
+    assert(blend("#abcdef", "#123456", 2) == "#123456");
+}
+
 /*
  * Each file-based test owns a fresh directory, without timing assumptions or
  * shared filenames. Cleanup also runs when an assertion fails.
@@ -53,18 +63,18 @@ unittest
 {
     auto theme = defaultTheme();
 
-    assert(theme.background == "#0D1117");
-    assert(theme.panel == "#161B22");
-    assert(theme.foreground == "#E6EDF3");
-    assert(theme.muted == "#8B949E");
-    assert(theme.accent == "#79C0FF");
-    assert(theme.selected == "#22334A");
-    assert(theme.border == "#30363D");
-    assert(theme.urgent == "#FF7B72");
-    assert(theme.high == "#FFA657");
-    assert(theme.normal == "#79C0FF");
-    assert(theme.low == "#8B949E");
-    assert(theme.success == "#7EE787");
+    assert(theme.background == "#09141D");
+    assert(theme.panel == "#10232E");
+    assert(theme.foreground == "#E8F2EF");
+    assert(theme.muted == "#93ADBA");
+    assert(theme.accent == "#69DCCB");
+    assert(theme.selected == "#1C3B49");
+    assert(theme.border == "#345362");
+    assert(theme.urgent == "#F28B82");
+    assert(theme.high == "#E7BB78");
+    assert(theme.normal == "#86C7DE");
+    assert(theme.low == "#B0A0CE");
+    assert(theme.success == "#8DD6A8");
     assert(loadTheme("") == theme);
 
     auto directory = themeDirectory();

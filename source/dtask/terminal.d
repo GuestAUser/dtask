@@ -8,6 +8,7 @@ import core.sys.posix.signal;
 import core.sys.posix.sys.ioctl : ioctl, winsize, TIOCGWINSZ;
 import core.sys.posix.termios;
 import core.sys.posix.unistd : isatty, read, posixWrite = write, _exit;
+import core.time : MonoTime, dur;
 import std.exception : enforce;
 import std.utf : encode;
 
@@ -447,6 +448,59 @@ struct InputDecoder
     }
 }
 
+/*
+ * Keep the render budget independent of decoder progress. Escape has its own
+ * precise monotonic deadline, retained across short readEvent calls. This
+ * package boundary lets tests use synthetic time without replacing POSIX I/O.
+ */
+package struct InputTiming
+{
+    private InputDecoder decoder;
+    private MonoTime visualDeadline;
+    private MonoTime escapeDeadline;
+
+    void beginWait(int milliseconds, MonoTime now)
+    {
+        visualDeadline = now + dur!"msecs"(milliseconds);
+    }
+
+    bool renderDue(MonoTime now) const
+    {
+        return now >= visualDeadline;
+    }
+
+    int waitMillis(MonoTime now) const
+    {
+        MonoTime deadline = visualDeadline;
+        if (decoder.waitingForEscape && escapeDeadline < deadline)
+            deadline = escapeDeadline;
+
+        if (now >= deadline)
+            return 0;
+
+        /* Round up so sub-millisecond remnants cannot expire Escape early. */
+        const remaining = (deadline - now).total!"nsecs";
+        return cast(int) ((remaining + 999_999) / 1_000_000);
+    }
+
+    Event expireEscape(MonoTime now)
+    {
+        if (!decoder.waitingForEscape || now < escapeDeadline)
+            return Event.init;
+
+        return decoder.expireEscape();
+    }
+
+    Event feed(ubyte value, MonoTime now)
+    {
+        auto event = decoder.feed(value);
+        if (decoder.waitingForEscape)
+            escapeDeadline = now + dur!"msecs"(35);
+
+        return event;
+    }
+}
+
 /**
  * Sanitize text and clip/pad it to exactly width terminal cells; nonpositive widths return empty.
  *
@@ -524,7 +578,7 @@ string fit(string text, int width)
  * paths, including signal handlers, disable it along with SGR encoding.
  */
 private enum enterScreen = "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h";
-private enum leaveScreen = "\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l";
+private enum leaveScreen = "\x1b[?2026l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l";
 private immutable watchedSignals = [SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGPIPE];
 private __gshared termios savedAttributes;
 private __gshared sigaction_t[5] savedHandlers;
@@ -637,7 +691,7 @@ private extern (C) void exitCleanup() nothrow @nogc
 final class Terminal
 {
     private bool open;
-    private InputDecoder decoder;
+    private InputTiming input;
     private int lastColumns;
     private int lastRows;
 
@@ -743,14 +797,20 @@ final class Terminal
     }
 
     /**
-     * Wait for input or a size change; an idle poll may return Key.none.
-     * A lone Escape expires after 35 ms without input; normal idle polls use 100 ms.
+     * Wait at most waitMilliseconds for input or a size change; may return Key.none.
+     * The nonnegative render budget is capped at 100 ms for resize responsiveness.
+     * A lone Escape keeps its separate 35 ms grace period across calls. Partial
+     * UTF-8, control sequences and paste survive render deadlines unchanged.
      * EOF, hangup or decoded Ctrl-C closes the terminal and returns Key.interrupt.
      * Throws if closed or terminal I/O fails. Resize events carry no size payload.
      */
-    Event readEvent()
+    Event readEvent(int waitMilliseconds = 100)
     {
         enforce(open, "Terminal is closed");
+        enforce(waitMilliseconds >= 0, "Terminal wait must be nonnegative");
+
+        input.beginWait(waitMilliseconds < 100 ? waitMilliseconds : 100, MonoTime.currTime);
+        bool attemptedPoll;
 
         for (;;)
         {
@@ -763,16 +823,28 @@ final class Terminal
                 return Event(Key.resize);
             }
 
+            const now = MonoTime.currTime;
+            if (attemptedPoll && input.renderDue(now))
+                return input.expireEscape(now);
+
             pollfd descriptor;
             descriptor.fd = 0;
             descriptor.events = POLLIN;
-            const ready = poll(&descriptor, 1, decoder.waitingForEscape ? 35 : 100);
+            const ready = poll(&descriptor, 1, input.waitMillis(now));
+            attemptedPoll = true;
             if (ready < 0 && errno == EINTR)
                 continue;
 
             enforce(ready >= 0, "Cannot poll terminal input");
             if (ready == 0)
-                return decoder.expireEscape();
+            {
+                const afterPoll = MonoTime.currTime;
+                auto event = input.expireEscape(afterPoll);
+                if (event.key != Key.none || input.renderDue(afterPoll))
+                    return event;
+
+                continue;
+            }
 
             enforce(!(descriptor.revents & (POLLERR | POLLNVAL)), "Terminal input failed");
             if (!(descriptor.revents & POLLIN) && (descriptor.revents & POLLHUP))
@@ -793,7 +865,7 @@ final class Terminal
                 return Event(Key.interrupt);
             }
 
-            auto event = decoder.feed(value);
+            auto event = input.feed(value, MonoTime.currTime);
             if (event.key == Key.interrupt)
                 close();
             if (event.key != Key.none)
