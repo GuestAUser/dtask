@@ -382,7 +382,7 @@ def navigation_checks(binary: str, root: Path, evidence: Path) -> None:
         session.send("\x1b[6~")  # Page Down: select task 11 in a ten-row list.
         session.send(" ")
         session.send("\x1b[F")  # End: select task 20.
-        session.send("\x1b[<64;20;10M")  # Wheel up three rows: select task 17.
+        session.send("\x1b[<64;20;10M")  # Wheel up one row: select task 19.
         session.send(" ")
         session.send("/")
         session.type_text("no such task")
@@ -402,7 +402,7 @@ def navigation_checks(binary: str, root: Path, evidence: Path) -> None:
 
     tasks = json.loads(command(binary, data, "list", "--all", "--json").stdout)
     assert len(tasks) == 20
-    assert sorted(task["id"] for task in tasks if task["completed"]) == [11, 17]
+    assert sorted(task["id"] for task in tasks if task["completed"]) == [11, 19]
     print("PASS: page/end/wheel navigation, empty search, invalid form and Ctrl-C cleanup")
 
 def scheduling_checks(binary: str, root: Path, evidence: Path) -> None:
@@ -463,6 +463,129 @@ def scheduling_checks(binary: str, root: Path, evidence: Path) -> None:
             session.finish()
 
     print("PASS: real mouse drag/drop, quick date clicks and safe cancellation at three widths")
+
+def selected_id(frame: bytes) -> int:
+    match = re.search(rb"#(\d+) /", frame)
+    assert match, "No selected stable task ID in the detail row"
+    return int(match[1])
+
+def direct_field_checks(binary: str, root: Path, evidence: Path) -> None:
+    for columns, rows in [(48, 20), (120, 32)]:
+        data = root / f"direct-fields-{columns}.json"
+        command(binary, data, "add", "First task", "--priority", "high", "--due", "2023-01-01")
+        command(binary, data, "add", "Target task", "--priority", "low", "--due", "2024-12-15")
+        command(binary, data, "add", "Other task", "--priority", "normal", "--due", "2025-02-02")
+        original = data.read_bytes()
+        list_width = columns - 34 if columns >= 110 else columns
+
+        with terminal(binary, data, columns, rows) as session:
+            assert selected_id(session.frames[-1]) == 1
+
+            # Every rendered cell in both fields, not a guessed label offset.
+            for x in range(list_width - 21, list_width):
+                session.send("g")
+                _, y = session.cell("Target task", min_row=8)
+                session.send(f"\x1b[<0;{x};{y}M")
+                frame = session.send(f"\x1b[<0;{x};{y}m")
+                assert selected_id(frame) == 2
+                assert data.read_bytes() == original, "Opening/releasing a field mutated storage"
+                if x < list_width - 12:
+                    for label in ("[low]", "[normal]", "[high]", "[urgent]"):
+                        session.cell(label)
+                    # Keyboard editing proves Priority, not Title, has focus.
+                    session.send("\x15")
+                    session.send("\x1b[200~urgent\x1b[201~")
+                    session.click("[Cancel]")
+                else:
+                    session.cell("[Next]")
+                    session.send("\x1b")
+                assert data.read_bytes() == original
+
+            # The cells immediately outside the fields remain selection/drag cells.
+            for x in (list_width - 22, list_width):
+                session.send("g")
+                _, y = session.cell("Target task", min_row=8)
+                session.send(f"\x1b[<0;{x};{y}M")
+                frame = session.send(f"\x1b[<0;{x};{y}m")
+                assert selected_id(frame) == 2
+                session.cell("Target task", min_row=8)
+                assert data.read_bytes() == original
+
+            session.send("g")
+            _, y = session.cell("Target task", min_row=8)
+            x = list_width - 12
+            session.send(f"\x1b[<0;{x};{y}M")
+            session.send(f"\x1b[<0;{x};{y}m")
+            evidence.joinpath(f"direct-calendar-{columns}.ansi").write_bytes(session.frames[-1])
+            session.click("[31]")
+            stored = {task["id"]: task for task in json.loads(data.read_text())["tasks"]}
+            before = {task["id"]: task for task in json.loads(original)["tasks"]}
+            assert stored[2] == {**before[2], "due": "2024-12-31"}
+            assert stored[1] == before[1] and stored[3] == before[3]
+
+            # Save a keyboard priority draft; stable selection follows the re-sort.
+            session.send("g")
+            _, y = session.cell("Target task", min_row=8)
+            x = list_width - 21
+            session.send(f"\x1b[<0;{x};{y}M")
+            session.send(f"\x1b[<0;{x};{y}m")
+            session.send("\x15")
+            session.send("\x1b[200~urgent\x1b[201~")
+            evidence.joinpath(f"direct-priority-{columns}.ansi").write_bytes(session.frames[-1])
+            frame = session.click("[Save]")
+            assert selected_id(frame) == 2
+            assert session.cell("Target task", min_row=8)[1] == 8
+            stored = {task["id"]: task for task in json.loads(data.read_text())["tasks"]}
+            assert stored[2] == {**before[2], "due": "2024-12-31", "priority": 4}
+            assert stored[1] == before[1] and stored[3] == before[3]
+
+            # All four mouse choices remain drafts, and Esc discards each one.
+            saved = data.read_bytes()
+            for label in ("[low]", "[normal]", "[high]", "[urgent]"):
+                session.send("G")
+                session.send(f"\x1b[<0;{x};8M")
+                session.send(f"\x1b[<0;{x};8m")
+                session.click(label)
+                session.send("\x1b")
+                assert data.read_bytes() == saved
+
+            evidence.joinpath(f"direct-sorted-{columns}.ansi").write_bytes(session.frames[-1])
+            session.finish()
+
+    print("PASS: exact direct-field intervals, nonselected IDs, release safety, Priority focus, Save/re-sort and Cancel")
+
+def wheel_precision_checks(binary: str, root: Path, evidence: Path) -> None:
+    for columns, rows in [(48, 20), (120, 32)]:
+        data = root / f"wheel-precision-{columns}.json"
+        for index in range(20):
+            command(binary, data, "add", f"Wheel task {index + 1:02}")
+        original = data.read_bytes()
+
+        with terminal(binary, data, columns, rows) as session:
+            down = "\x1b[<65;20;10M"
+            up = "\x1b[<64;20;10M"
+            assert selected_id(session.send(down)) == 2
+            assert selected_id(session.send(up)) == 1
+
+            # One write, no inter-event delays; assert every acknowledged frame.
+            for event, expected in [(down, list(range(2, 21)) + [20] * 4),
+                                    (up, list(range(19, 0, -1)) + [1] * 4)]:
+                os.write(session.master, (event * len(expected)).encode())
+                actual = [selected_id(session.frame()) for _ in expected]
+                assert actual == expected, (actual, expected)
+
+            # Wheel input must not change the stable ID captured by a drag.
+            session.send("\x1b[<0;10;8M")
+            assert selected_id(session.send(down)) == 1
+            session.send("\x1b[<32;1;1M")
+            assert selected_id(session.send(down)) == 1
+            session.send("\x1b[<0;1;1m")
+            evidence.joinpath(f"wheel-precision-{columns}.ansi").write_bytes(b"".join(session.frames))
+            session.finish()
+
+        assert data.read_bytes() == original
+
+    print("PASS: one task per wheel event, undelayed bursts, both clamps and drag suppression")
 
 def calendar_checks(binary: str, root: Path, evidence: Path) -> None:
     for columns, rows in [(120, 32), (48, 20)]:
@@ -900,51 +1023,129 @@ def normalized_limit_checks(binary: str, root: Path, evidence: Path) -> None:
     print("PASS: normalized 4096/1024-byte limits, whole-event rejection and editable oversized fields")
 
 def motion_checks(binary: str, root: Path, evidence: Path) -> None:
-    """Visual ticks are observable, incremental, read-only, and suppressible."""
-    for columns, rows in [(48, 20), (80, 24), (120, 40)]:
-        data = root / f"motion-{columns}.json"
-        command(binary, data, "add", "Motion must not mutate this task", "--notes", "Keep the store unchanged")
+    """Measure a traveling band on actual emitted cells, not a global fade."""
+    def row_run(frame: bytes, row: int, column: int = 1) -> bytes:
+        matches = re.findall(fr"\x1b\[{row};{column}H(.*?)(?=\x1b\[\d+;\d+H)".encode(), frame, re.S)
+        run = matches[-1] if matches else b""
+        if column == 1:
+            # line() establishes the default palette before painting content.
+            run = re.sub(rb"^\x1b\[48;2;[\d;]+m\x1b\[38;2;[\d;]+m", b"", run)
+        return run
+
+    def backgrounds(run: bytes) -> list[tuple[int, ...]]:
+        # The measured rows use ASCII, so each printable byte is one cell.
+        result: list[tuple[int, ...]] = []
+        color: tuple[int, ...] = ()
+        for part in re.split(rb"(\x1b\[[0-?]*[ -/]*[@-~])", run):
+            match = re.fullmatch(rb"\x1b\[48;2;(\d+);(\d+);(\d+)m", part)
+            if match:
+                color = tuple(map(int, match.groups()))
+            elif not part.startswith(b"\x1b"):
+                result.extend([color] * len(part))
+        return result
+
+    def still(session: TerminalSession, label: str) -> None:
+        assert not session.pending, label
+        assert not session.selector.select(timeout=0.3), label
+
+    def sweep(session: TerminalSession, initial: bytes, row: int, column: int,
+              width: int, base: tuple[int, ...], label: str) -> None:
+        ticks: list[bytes] = []
+        positions: list[float] = []
+        samples: list[dict[str, object]] = []
+        started = monotonic()
+        deadline = started + 4
+        # Ordinary ink starts background, foreground. Active shimmer starts
+        # foreground, background. Wait for the actual settled row, not time.
+        ordinary = f"\x1b[48;2;{base[0]};{base[1]};{base[2]}m\x1b[38;2;".encode()
+
+        while True:
+            assert monotonic() < deadline, f"{label}: sweep did not settle"
+            tick = session.frame(full=False)
+            ticks.append(tick)
+            run = row_run(tick, row, column)
+            cells = backgrounds(run)
+            if cells:
+                assert len(cells) == width, (label, len(cells), width)
+                band = [index for index, color in enumerate(cells) if color != base]
+                if band:
+                    assert len(band) < width * 0.4, f"{label}: global brightness, not a narrow band"
+                    assert band == list(range(band[0], band[-1] + 1)), label
+                    positions.append(sum(band) / len(band))
+                samples.append({"elapsed": monotonic() - started, "band": band})
+                if positions and not band and run.startswith(ordinary):
+                    break
+
+        assert len(positions) >= 5, (label, positions)
+        assert min(positions) < width * 0.25 and max(positions) > width * 0.75, (label, positions)
+        assert all(a <= b for a, b in zip(positions, positions[1:])), (label, positions)
+        assert all(len(tick) < len(initial) // 2 for tick in ticks), label
+        assert all(b"\x1b[?2026h" in tick and b"\x1b[?2026l" in tick for tick in ticks), label
+        assert all(b"\x1b[2J" not in tick and b"\x1b[1;1H" not in tick for tick in ticks), label
+        evidence.joinpath(label + ".ansi").write_bytes(initial + b"".join(ticks))
+        evidence.joinpath(label + ".json").write_text(json.dumps(samples, indent=2))
+        still(session, f"{label}: settled motion emitted idle output")
+
+    for columns, rows in [(48, 20), (80, 24), (120, 32), (120, 40)]:
+        data = root / f"motion-{columns}-{rows}.json"
+        # Rows with Unicode are checked separately for intact color-run clusters.
+        clusters = ("e\u0301", "\U0001f469\u200d\U0001f4bb", "\U0001f1fa\U0001f1f8", "1\ufe0f\u20e3")
+        command(binary, data, "add", " ".join(clusters), "--notes", "Keep the store unchanged")
         command(binary, data, "add", "Second focus target")
         original = data.read_bytes()
+        list_width = columns - 34 if columns >= 110 else columns
 
         with terminal(binary, data, columns, rows, reduced_motion=False) as session:
-            initial = session.frames[-1]
-            ticks: list[bytes] = []
-            colors: list[tuple[int, ...]] = []
-            deadline = monotonic() + 3
-
-            while not colors or colors[-1] != (28, 59, 73):
-                assert monotonic() < deadline, "Focus transition did not settle"
-                tick = session.frame(full=False)
-                ticks.append(tick)
-                row = re.search(rb"\x1b\[8;1H(.*?)(?=\x1b\[\d+;\d+H)", tick, re.S)
-                if row:
-                    backgrounds = re.findall(rb"\x1b\[48;2;(\d+);(\d+);(\d+)m", row[1])
-                    colors.append(tuple(map(int, backgrounds[1])))
-
-            assert len(set(colors)) > 1, "Focus snapped instead of easing"
-            assert all(a[0] <= b[0] for a, b in zip(colors, colors[1:]))
-            assert all(len(tick) < len(initial) // 2 for tick in ticks)
-            assert all(b"\x1b[?2026h" in tick and b"\x1b[?2026l" in tick for tick in ticks)
+            still(session, "Startup without a transition must stay idle")
+            initial = session.send("j")
+            assert selected_id(initial) == 2
+            assert backgrounds(row_run(initial, 9))[0] == (28, 59, 73), "Selection was delayed"
+            sweep(session, initial, 9, 1, list_width - 1, (28, 59, 73), f"focus-{columns}-{rows}")
             assert data.read_bytes() == original
-            evidence.joinpath(f"animation-{columns}.ansi").write_bytes(initial + b"".join(ticks))
+
+            # A status-only transition has a moving band, not a brand/global pulse.
+            initial = session.send("r")
+            sweep(session, initial, rows - 2, 1, columns, (9, 20, 29), f"status-{columns}-{rows}")
+
+            x, y = session.cell("Second focus target", min_row=8)
+            session.send(f"\x1b[<0;{x};{y}M")
+            target_x, target_y = session.cell("Tomorrow")
+            initial = session.send(f"\x1b[<32;{target_x};{target_y}M")
+            target_width = 30 if columns >= 110 else (columns - 4) // 3
+            target_column = columns - 31 if columns >= 110 else target_x - 1
+            sweep(session, initial, target_y, target_column, target_width,
+                  (28, 59, 73), f"drop-{columns}-{rows}")
+            session.send("\x1b")
+            session.send(f"\x1b[<0;{target_x};{target_y}m")
 
             # Interrupt an active transition with another selection. Input is
             # acknowledged as a complete frame, never queued behind animation.
-            session.send("j")
-            session.frame(full=False)
             frame = session.send("k")
-            assert b"> " in frame
+            assert selected_id(frame) == 1
+            unicode_frames = [frame]
+            for _ in range(8):
+                unicode_frames.append(session.frame(full=False))
+            for frame in unicode_frames:
+                run = row_run(frame, 8)
+                if run:
+                    for cluster in clusters:
+                        assert cluster.encode() in run, "ANSI split a grapheme cluster"
+            evidence.joinpath(f"shimmer-graphemes-{columns}-{rows}.ansi").write_bytes(b"".join(unicode_frames))
+            assert selected_id(session.send("j")) == 2
             session.send("m")
-            # The absence of timed output is the behavior under test. Subscribe
-            # after the input frame acknowledges disabling motion; do not sleep.
-            assert not session.pending
-            assert not session.selector.select(timeout=0.3), "Reduced motion emitted an idle frame"
+            still(session, "Reduced motion emitted an idle frame")
             session.click("[FX:off]")
             session.frame(full=False)
             session.send("n")
-            assert not session.pending
-            assert not session.selector.select(timeout=0.3), "Editing did not pause animation"
+            still(session, "Editing did not stop animation")
+            session.click("[Edit description]")
+            still(session, "Description editing emitted animation")
+            session.send("\x1b")
+            session.send("/")
+            still(session, "Search emitted animation")
+            session.send("\x1b")
+            session.send("?")
+            still(session, "Help emitted animation")
             session.send("\x1b")
             session.resize(columns + 1, rows + 1)
             os.kill(session.process.pid, signal.SIGWINCH)
@@ -954,7 +1155,7 @@ def motion_checks(binary: str, root: Path, evidence: Path) -> None:
 
         assert data.read_bytes() == original
 
-    print("PASS: eased focus, interrupted input, incremental synchronized frames, reduced motion and resize")
+    print("PASS: moving focus/drop/status bands, whole graphemes, immediate input, finite idle-free motion, still modes and resize")
 
 def help_checks(binary: str, root: Path) -> None:
     def position(frame: bytes) -> tuple[int, int, int]:
@@ -1010,6 +1211,8 @@ def main() -> None:
         theme_checks(binary, root, evidence)
         navigation_checks(binary, root, evidence)
         scheduling_checks(binary, root, evidence)
+        direct_field_checks(binary, root, evidence)
+        wheel_precision_checks(binary, root, evidence)
         calendar_checks(binary, root, evidence)
         description_checks(binary, root, evidence)
         cursor_boundary_checks(binary, root)

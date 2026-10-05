@@ -90,8 +90,9 @@ private final class Workspace
     string[] previousRows;
     int paintedColumns;
     int paintedHeight;
-    double[ulong] focusFrom;
-    double[6] scheduleFrom = [0, 0, 0, 0, 0, 0];
+    ulong shimmerFocus;
+    int shimmerDrop = -1;
+    bool shimmerStatus;
 
     this(TaskStore store, Terminal terminal, Theme theme, string themePath)
     {
@@ -105,7 +106,6 @@ private final class Workspace
     {
         const origin = MonoTime.currTime;
         motion.enabled = environment.get("DTASK_REDUCED_MOTION", "") != "1";
-        motion.start(0);
         bool dirty = true;
         uint lastFrame;
 
@@ -113,8 +113,7 @@ private final class Workspace
         {
             terminal.size(columns, rows);
             visualTime = (MonoTime.currTime - origin).total!"msecs";
-            const animate = mode != Mode.edit && mode != Mode.descriptionEdit
-                && mode != Mode.search && mode != Mode.help;
+            const animate = motionAllowed();
 
             if (dirty)
             {
@@ -146,18 +145,6 @@ private final class Workspace
             const oldStatus = status;
             const oldTarget = dropTarget;
             const oldFilter = filter;
-            double[ulong] currentFocus;
-            double[6] currentSchedule;
-
-            foreach (index; offset .. min(cast(int) visible.length, offset + listHeight))
-            {
-                auto id = store.tasks[visible[index]].id;
-                currentFocus[id] = focusLevel(id);
-            }
-
-            foreach (index; 0 .. 6)
-                currentSchedule[index] = scheduleLevel(index);
-
             try
             {
                 handle(event);
@@ -174,12 +161,29 @@ private final class Workspace
             auto newTask = current();
             const newId = newTask is null ? 0 : newTask.id;
 
-            if (mode != Mode.edit && mode != Mode.descriptionEdit && mode != Mode.search
-                && (oldId != newId || oldMode != mode || oldStatus != status
-                    || oldTarget != dropTarget || oldFilter != filter))
+            if (!motionAllowed() || !motion.enabled)
             {
-                focusFrom = currentFocus;
-                scheduleFrom = currentSchedule;
+                motion.stop();
+            }
+            else if (oldId != newId || oldMode != mode || oldStatus != status
+                || oldTarget != dropTarget || oldFilter != filter)
+            {
+                const continuing = motion.active(visualTime);
+
+                if (!continuing)
+                {
+                    shimmerFocus = 0;
+                    shimmerDrop = -1;
+                    shimmerStatus = false;
+                }
+
+                if (oldId != newId || oldMode != mode || oldFilter != filter)
+                    shimmerFocus = newId;
+
+                if (oldTarget != dropTarget)
+                    shimmerDrop = dropTarget;
+
+                shimmerStatus = shimmerStatus || oldStatus != status;
                 motion.start(visualTime);
             }
 
@@ -187,18 +191,10 @@ private final class Workspace
         }
     }
 
-    double focusLevel(ulong id)
+    bool motionAllowed() const
     {
-        auto task = current();
-        const target = task !is null && task.id == id ? 1.0 : 0.0;
-        const start = focusFrom.get(id, 0.0);
-        return start + (target - start) * motion.progress(visualTime);
-    }
-
-    double scheduleLevel(int index)
-    {
-        const target = dragging && dropTarget == index ? 1.0 : 0.0;
-        return scheduleFrom[index] + (target - scheduleFrom[index]) * motion.progress(visualTime);
+        return mode != Mode.edit && mode != Mode.descriptionEdit
+            && mode != Mode.search && mode != Mode.help;
     }
 
     void refresh(ulong preferId = 0)
@@ -269,10 +265,13 @@ private final class Workspace
         paintedRows[row - 1] = command;
     }
 
-    void at(ref string frame, int x, int y, string text, int width, string color, string surface = "")
+    void at(ref string frame, int x, int y, string text, int width, string color,
+        string surface = "", bool shimmer = false)
     {
+        auto fitted = fit(text, width);
         auto command = "\x1b[" ~ to!string(y) ~ ";" ~ to!string(x) ~ "H"
-            ~ ink(color, fit(text, width), surface);
+            ~ (shimmer ? shimmerInk(fitted, color, surface, theme.accent, motion, visualTime, 0, width)
+                : ink(color, fitted, surface));
         frame ~= command;
         paintedRows[y - 1] ~= command;
     }
@@ -429,9 +428,12 @@ private final class Workspace
             at(frame, 30, rows - 3, "[Del]", 5, theme.urgent);
         }
 
-        auto statusColor = blend(theme.foreground, theme.muted, motion.progress(visualTime));
-        line(frame, rows - 2, ink(status.length >= 6 && status[0 .. 6] == "Error:"
-            ? theme.urgent : statusColor, fit("  " ~ status, columns)));
+        auto statusColor = status.length >= 6 && status[0 .. 6] == "Error:" ? theme.urgent : theme.muted;
+        auto statusText = fit("  " ~ status, columns);
+        line(frame, rows - 2, shimmerStatus
+            ? shimmerInk(statusText, statusColor, theme.background, theme.accent,
+                motion, visualTime, 0, columns)
+            : ink(statusColor, statusText));
 
         auto footer = mode == Mode.descriptionEdit ? "  Enter: newline | Tab: back | Esc: cancel"
             : mode == Mode.reader ? "  Wheel/PgUp/PgDn/Home/End | Esc: back"
@@ -474,8 +476,7 @@ private final class Workspace
 
     void renderHeader(ref string frame, size_t openCount, size_t completedCount, size_t overdueCount)
     {
-        auto brandColor = blend(theme.foreground, theme.accent, motion.progress(visualTime));
-        line(frame, 1, ink(brandColor, fit("  dtask_", columns - 26))
+        line(frame, 1, ink(theme.accent, fit("  dtask_", columns - 26))
             ~ ink(theme.muted, fit(todayISO() ~ " / " ~ theme.name, 26)));
         auto summary = "  " ~ to!string(openCount) ~ " open   " ~ to!string(overdueCount)
             ~ " overdue   " ~ to!string(completedCount) ~ " done";
@@ -499,16 +500,24 @@ private final class Workspace
             {
                 auto task = store.tasks[visible[index]];
                 auto surface = task.id == dragId && dragging ? theme.panel
-                    : blend(theme.background, theme.selected, focusLevel(task.id));
+                    : index == selected ? theme.selected : theme.background;
+                const shimmer = index == selected && task.id == shimmerFocus && motion.active(visualTime);
+
+                string taskInk(string color, string text, int cell)
+                {
+                    return shimmer ? shimmerInk(text, color, surface, theme.accent,
+                        motion, visualTime, cell, listWidth - 1) : ink(color, text, surface);
+                }
+
                 auto color = task.completed ? theme.muted : theme.foreground;
                 auto dueColor = task.due.length && daysUntil(task.due) < 0 && !task.completed
                     ? theme.urgent : theme.muted;
                 auto marker = index == selected ? "> " : "  ";
-                auto content = ink(mode == Mode.confirmDelete ? theme.urgent : theme.accent, marker, surface)
-                    ~ ink(index == selected ? theme.accent : theme.muted, task.completed ? "[x] " : "[ ] ", surface)
-                    ~ ink(color, fit(task.title, listWidth - 28), surface)
-                    ~ ink(priorityColor(task.priority), fit(" " ~ priorityLabel(task.priority), 9), surface)
-                    ~ ink(dueColor, fit(task.due.length ? task.due : "no date", 12), surface);
+                auto content = taskInk(mode == Mode.confirmDelete ? theme.urgent : theme.accent, marker, 0)
+                    ~ taskInk(index == selected ? theme.accent : theme.muted, task.completed ? "[x] " : "[ ] ", 2)
+                    ~ taskInk(color, fit(task.title, listWidth - 28), 6)
+                    ~ taskInk(priorityColor(task.priority), fit(" " ~ priorityLabel(task.priority), 9), listWidth - 22)
+                    ~ taskInk(dueColor, fit(task.due.length ? task.due : "no date", 12), listWidth - 13);
                 line(frame, 8 + row, content);
             }
         }
@@ -689,7 +698,8 @@ private final class Workspace
         {
             auto cell = scheduleCell(columns, rows, index, calendar);
             const highlighted = dragging && dropTarget == index;
-            auto surface = blend(theme.panel, theme.selected, scheduleLevel(index));
+            auto surface = highlighted ? theme.selected : theme.panel;
+            const shimmer = highlighted && shimmerDrop == index;
             const label = index == 5 && calendar ? "Back" : scheduleLabels[index];
             auto color = highlighted ? theme.success : theme.accent;
             auto title = "[" ~ label ~ "]";
@@ -711,7 +721,7 @@ private final class Workspace
                 title = (highlighted ? "> " : "  ") ~ label ~ "  (" ~ to!string(count) ~ ")";
             }
 
-            at(frame, cell.x, cell.y, title, cell.width, color, surface);
+            at(frame, cell.x, cell.y, title, cell.width, color, surface, shimmer);
 
             if (wide && index < 5)
             {
@@ -879,8 +889,11 @@ private final class Workspace
             HelpRow("", "MOUSE", true),
             HelpRow("Click a row", "Select a task"),
             HelpRow("Checkbox", "Complete or reopen"),
+            HelpRow("Due-date cells", "Open this task's calendar"),
+            HelpRow("Priority cells", "Choose priority; Save applies"),
             HelpRow("Drag to date", "Schedule the task"),
-            HelpRow("Wheel", "Scroll the current view"),
+            HelpRow("Wheel on tasks", "Move selection by one task"),
+            HelpRow("Wheel elsewhere", "Scroll the current view"),
             HelpRow("Esc / resize", "Cancel a drag without changes")
         ];
         static immutable right = [
@@ -1494,7 +1507,7 @@ private final class Workspace
             else if (mode == Mode.help)
                 scrollHelp(event.button == 64 ? -3 : 3);
             else if (mode == Mode.browse || mode == Mode.search)
-                selected += event.button == 64 ? -3 : 3;
+                selected += event.button == 64 ? -1 : 1;
             else if (mode == Mode.calendar)
                 calendarMonth = adjacentMonth(calendarMonth, event.button == 64 ? -1 : 1);
 
@@ -1686,6 +1699,21 @@ private final class Workspace
             if (index < visible.length)
             {
                 selected = index;
+                clearDrag();
+
+                if (event.x >= listWidth - 12 && event.x < listWidth)
+                {
+                    beginCalendar();
+                    return;
+                }
+
+                if (event.x >= listWidth - 21 && event.x < listWidth - 12)
+                {
+                    beginEdit(true);
+                    field = 1;
+                    return;
+                }
+
                 dragId = store.tasks[visible[index]].id;
                 pressX = event.x;
                 pressY = event.y;
