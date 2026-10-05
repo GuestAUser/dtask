@@ -2,6 +2,7 @@ module dtask.text;
 
 import core.sys.posix.locale : locale_t, newlocale, freelocale, uselocale, LC_CTYPE_MASK;
 import std.exception : enforce;
+import std.uni : graphemeStride;
 import std.utf : decode, encode, UTFException;
 
 /* POSIX wchar_t is a 32-bit scalar on the supported platforms. */
@@ -23,7 +24,7 @@ private locale_t characterLocale()
  * Stored text is not keyboard input: paste markers must not cap its length,
  * Ctrl-C must not reset sequence quarantine, and LF/tab must survive unchanged.
  */
-private dchar[] printableText(string text)
+private dchar[] printableText(string text, bool singleLine = false)
 {
     enum State { ground, escape, intermediate, sequence, controlString, stringEscape, legacyMouse }
     State state;
@@ -130,6 +131,8 @@ private dchar[] printableText(string text)
             state = State.controlString;
             osc = value == 0x9d;
         }
+        else if (singleLine && (value == '\r' || value == '\n' || value == '\t'))
+            result ~= ' ';
         else if (value == '\n' || value == '\t' ||
             (value >= 0x20 && !(value >= 0x7f && value <= 0x9f)))
             result ~= value;
@@ -138,8 +141,87 @@ private dchar[] printableText(string text)
     return result;
 }
 
+/** Whole-field grapheme boundaries as code-point offsets, including both endpoints. */
+size_t[] graphemeBoundaries(scope const(dchar)[] points)
+{
+    size_t[] result = [0];
+    size_t offset;
+
+    while (offset < points.length)
+    {
+        offset += graphemeStride(points, offset);
+        result ~= offset;
+    }
+
+    return result;
+}
+
+/** Largest whole-grapheme UTF-8 prefix within budget; input must be valid UTF-8. */
+size_t graphemePrefixBytes(string text, size_t budget)
+{
+    size_t offset;
+
+    while (offset < text.length)
+    {
+        auto next = offset + graphemeStride(text, offset);
+
+        if (next > budget)
+            break;
+
+        offset = next;
+    }
+
+    return offset;
+}
+
+/*
+ * Modern narrow-ambiguous, grapheme-aware terminals join scalar widths by
+ * maximum, with emoji-presentation and paired flags occupying two cells.
+ * Phobos supplies segmentation, not a promise of current full UAX #29 support.
+ * Call only while the private character-width locale is selected.
+ */
+private int clusterCells(scope const(dchar)[] cluster)
+{
+    int cells;
+    int regionalIndicators;
+    bool emojiPresentation;
+
+    foreach (value; cluster)
+    {
+        const count = wcwidth(value);
+
+        if (count > cells)
+            cells = count;
+
+        emojiPresentation |= value == 0xfe0f;
+        regionalIndicators += value >= 0x1f1e6 && value <= 0x1f1ff;
+    }
+
+    if (cells > 0 && (emojiPresentation || regionalIndicators == 2) && cells < 2)
+        cells = 2;
+
+    return cells;
+}
+
+private string clusterText(scope const(dchar)[] cluster)
+{
+    char[] result;
+
+    foreach (value; cluster)
+    {
+        if (wcwidth(value) < 0)
+            continue;
+
+        char[4] bytes;
+        const length = encode(bytes, value);
+        result ~= bytes[0 .. length];
+    }
+
+    return cast(string) result;
+}
+
 /**
- * Return the POSIX display-cell width of a printable line, not its UTF-8 length.
+ * Return the grapheme display-cell width of a printable line, not its UTF-8 length.
  *
  * Terminal sequences and nonprinting controls are removed. Tabs advance to
  * four-column stops; LF counts as a space when measuring single-line text.
@@ -158,21 +240,62 @@ int textWidth(string text)
 
     int cells;
 
-    foreach (value; printableText(text))
+    auto points = printableText(text);
+
+    for (size_t start; start < points.length; )
     {
-        if (value == '\t')
+        const end = start + graphemeStride(points, start);
+
+        if (points[start] == '\t')
             cells += 4 - cells % 4;
-        else if (value == '\n')
+        else if (points[start] == '\n')
             ++cells;
         else
-        {
-            const count = wcwidth(value);
-            if (count > 0)
-                cells += count;
-        }
+            cells += clusterCells(points[start .. end]);
+
+        start = end;
     }
 
     return cells;
+}
+
+/** Sanitize stored text, then clip whole clusters and pad to exactly width cells. */
+string fitText(string text, int width)
+{
+    if (width <= 0)
+        return "";
+
+    auto locale = characterLocale();
+    scope (exit) freelocale(locale);
+
+    auto previous = uselocale(locale);
+    enforce(previous !is null, "Cannot select a character-width locale");
+    scope (exit) uselocale(previous);
+
+    auto points = printableText(text, true);
+    char[] result;
+    int cells;
+
+    for (size_t start; start < points.length; )
+    {
+        const end = start + graphemeStride(points, start);
+        auto cluster = points[start .. end];
+        const count = clusterCells(cluster);
+        start = end;
+
+        if (count == 0 && cells == 0)
+            continue;
+
+        if (count > width - cells)
+            break;
+
+        result ~= clusterText(cluster);
+        cells += count;
+    }
+
+    result.length += width - cells;
+    result[$ - (width - cells) .. $] = ' ';
+    return cast(string) result;
 }
 
 private struct Glyph
@@ -249,7 +372,7 @@ private string[] wrapParagraph(Glyph[] glyphs, int columns)
  * LF preserves paragraph boundaries, including blank and trailing lines. Tabs
  * expand at four-column stops in each input paragraph before wrapping. Spaces
  * used as soft-wrap separators are omitted; other spaces remain unchanged.
- * Long words break between scalars, keeping zero-width marks with their base.
+ * Long words break only between complete Phobos grapheme clusters.
  * Terminal sequences and nonprinting controls are removed, never rendered.
  * Malformed UTF-8 becomes replacement characters. Input data is never changed.
  * Empty input returns one empty line; nonpositive columns returns no lines.
@@ -270,49 +393,53 @@ string[] wrapText(string text, int columns)
     enforce(previous !is null, "Cannot select a character-width locale");
     scope (exit) uselocale(previous);
 
-    string[] lines;
-    Glyph[] paragraph;
+    auto points = printableText(text);
+    dchar[] expanded;
     int tabColumn;
 
-    foreach (value; printableText(text))
+    /* Expand paragraph tabs before segmenting: a following mark joins a space. */
+    for (size_t start; start < points.length; )
     {
-        if (value == '\n')
+        const end = start + graphemeStride(points, start);
+        auto cluster = points[start .. end];
+
+        if (points[start] == '\t')
+        {
+            foreach (_; 0 .. 4 - tabColumn)
+                expanded ~= ' ';
+
+            tabColumn = 0;
+        }
+        else
+        {
+            expanded ~= cluster;
+            tabColumn = points[start] == '\n' ? 0 : (tabColumn + clusterCells(cluster)) % 4;
+        }
+
+        start = end;
+    }
+
+    string[] lines;
+    Glyph[] paragraph;
+
+    for (size_t start; start < expanded.length; )
+    {
+        const end = start + graphemeStride(expanded, start);
+        auto cluster = expanded[start .. end];
+
+        if (expanded[start] == '\n')
         {
             lines ~= wrapParagraph(paragraph, columns);
             paragraph = null;
-            tabColumn = 0;
-            continue;
-        }
-
-        if (value == '\t')
-        {
-            foreach (_; 0 .. 4 - tabColumn)
-                paragraph ~= Glyph(" ", 1, true);
-
-            tabColumn = 0;
-            continue;
-        }
-
-        const count = wcwidth(value);
-        if (count < 0)
-            continue;
-
-        enforce(count <= columns, "Wrap width cannot hold a character");
-
-        char[4] bytes;
-        const length = encode(bytes, value);
-        auto encoded = bytes[0 .. length].idup;
-
-        if (count == 0 && paragraph.length)
-        {
-            paragraph[$ - 1].text ~= encoded;
-            /* A space carrying marks is content, not a disposable separator. */
-            paragraph[$ - 1].space = false;
         }
         else
-            paragraph ~= Glyph(encoded, count, value == ' ');
+        {
+            const count = clusterCells(cluster);
+            enforce(count <= columns, "Wrap width cannot hold a grapheme");
+            paragraph ~= Glyph(clusterText(cluster), count, cluster == " "d);
+        }
 
-        tabColumn = (tabColumn + count) % 4;
+        start = end;
     }
 
     lines ~= wrapParagraph(paragraph, columns);

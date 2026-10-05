@@ -427,6 +427,39 @@ unittest
     }
 }
 
+unittest
+{
+    import std.array : replicate;
+    import std.utf : validate;
+
+    /* The first overflow can extend the last accepted cluster, up to cap+4 bytes. */
+    string[] clusters = ["e\u0301", "\U0001f44d\U0001f3fd", "\U0001f469\u200d\U0001f4bb",
+        "\U0001f1fa\U0001f1f8", "1\ufe0f\u20e3", "\U0001f469\u200d\U0001f4bb"];
+    size_t[] acceptedBytes = [1, 4, 7, 4, 4, 4];
+
+    foreach (index, cluster; clusters)
+    {
+        auto prefix = "x".replicate(InputDecoder.maxPaste - acceptedBytes[index]);
+        auto events = decode("\x1b[200~" ~ prefix ~ cluster
+            ~ "z\x1b]hidden\x03tail\x07\x1b[201~q");
+
+        assert(events.length == 2);
+        assert(events[0].pasted && events[0].text == prefix);
+        assert(events[1] == Event(Key.text, "q"));
+        validate(events[0].text);
+    }
+
+    auto exact = "x".replicate(InputDecoder.maxPaste - 8) ~ clusters[1];
+    auto events = decode("\x1b[200~" ~ exact ~ "z\x1b[201~");
+    assert(events.length == 1 && events[0].text == exact);
+
+    /* A single continuing cluster may be larger than the entire transport cap. */
+    auto enormous = "e" ~ "\u0301".replicate(InputDecoder.maxPaste / 2);
+    assert(decode("\x1b[200~" ~ enormous ~ "z\x1b[201~q") == [Event(Key.text, "q")]);
+    assert(fit(clusters[2], 1) == " ");
+    assert(fit(clusters[2], 2) == clusters[2]);
+}
+
 /*
  * Build with -d-version=TerminalProbe (without tests/runner.d) to exercise the
  * actual TTY boundary from a PTY driver. READY is the synchronization event;

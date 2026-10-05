@@ -2,7 +2,7 @@ module ui_test;
 
 import dtask.widgets;
 import std.datetime : Date;
-import dtask.text : textWidth;
+import dtask.text : graphemeBoundaries, textWidth;
 
 unittest
 {
@@ -269,4 +269,57 @@ unittest
     auto explicitBreak = draftLines("abcd\nxy", 4);
     assert(draftCursorAt("abcd\nxy", explicitBreak[0], 4) == 4);
     assert(draftCursorRow(explicitBreak, 4) == 0);
+}
+
+unittest
+{
+    import std.algorithm : canFind;
+    import std.conv : to;
+    import std.exception : assertThrown;
+
+    string[] clusters = ["e\u0301", "\U0001f44d\U0001f3fd", "\U0001f469\u200d\U0001f4bb",
+        "\U0001f468\u200d\U0001f469\u200d\U0001f467",
+        "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466",
+        "\U0001f1fa\U0001f1f8", "\u4e2d", "1\ufe0f\u20e3", "\u2764\ufe0f"];
+    int[] widths = [1, 2, 2, 2, 2, 2, 2, 2, 2];
+
+    foreach (index, cluster; clusters)
+    {
+        const width = widths[index];
+        const length = to!dstring(cluster).length;
+        auto text = "A" ~ cluster ~ "B";
+        auto lines = draftLines(text, width + 1);
+        assert(lines == [DraftLine("A" ~ cluster, 0, 1 + length),
+            DraftLine("B", 1 + length, 2 + length)]);
+        auto boundaries = graphemeBoundaries(to!dstring(text));
+
+        foreach (column; -1 .. width + 3)
+        {
+            auto cursor = draftCursorAt(text, lines[0], column);
+            assert(cursor == (column <= 0 ? 0 : 1));
+            assert(boundaries.canFind(cursor));
+            assert(draftCursorRow(lines, cursor) == 0);
+        }
+
+        auto explicitText = "A" ~ cluster ~ "\nB";
+        auto explicitLines = draftLines(explicitText, width + 1);
+        assert(draftCursorAt(explicitText, explicitLines[0], width + 1) == 1 + length);
+        assert(draftCursorAt(cluster, draftLines(cluster, width)[0], width) == length);
+
+        if (width > 1)
+            assertThrown!Exception(draftLines(cluster, width - 1));
+    }
+
+    auto flags = "\U0001f1fa\U0001f1f8\U0001f1e8";
+    assert(draftLines(flags, 2) == [DraftLine(flags[0 .. 8], 0, 2), DraftLine(flags[8 .. $], 2, 3)]);
+    auto marked = "\u0301\u0308a\t\U0001f469\u200d\U0001f4bb";
+    auto lines = draftLines(marked, 6);
+    assert(draftCursorAt(marked, lines[0], -1) == 2);
+    assert(draftCursorAt(marked, lines[0], 0) == 2);
+    assert(draftCursorAt(marked, lines[0], 3) == 3);
+    assert(draftCursorAt(marked, lines[0], 4) == 4);
+    assert(draftCursorAt(marked, lines[0], 5) == 4);
+    assert(draftCursorAt(marked, lines[0], 6) == 7);
+    assert(draftLines("a\r\nb", 4) == [DraftLine("a", 0, 1), DraftLine("b", 3, 4)]);
+    assert(draftLines("anything", 0).length == 0);
 }

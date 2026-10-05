@@ -656,6 +656,249 @@ def caret_rendering_checks(binary: str, root: Path, evidence: Path) -> None:
     assert task["title"] == title and task["notes"] == "regression baselines"
     print("PASS: native edit cursor preserves text cells and Unicode positioning")
 
+def grapheme_editing_checks(binary: str, root: Path, evidence: Path) -> None:
+    clusters = [
+        ("accent", "e\u0301", 1),
+        ("modifier", "\U0001f44d\U0001f3fd", 2),
+        ("profession", "\U0001f469\u200d\U0001f4bb", 2),
+        ("family-three", "\U0001f468\u200d\U0001f469\u200d\U0001f467", 2),
+        ("family-four", "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466", 2),
+        ("flag", "\U0001f1e7\U0001f1f7", 2),
+        ("cjk", "\u4e2d", 2),
+        ("keycap", "1\ufe0f\u20e3", 2),
+        ("presentation", "\u2764\ufe0f", 2),
+    ]
+
+    for columns, rows in [(48, 20), (120, 32)]:
+        for label, cluster, width in clusters:
+            # The four actions are the retained baseline's actual editing cases.
+            operations = [
+                ("backspace", ["\x1b[D", "\x7f"], "AB", 1),
+                ("delete", ["\x1b[H", "\x1b[C", "\x1b[3~"], "AB", 1),
+                ("right", ["\x1b[H", "\x1b[C", "\x1b[C", "X"], "A" + cluster + "XB", width + 2),
+                ("left", ["\x1b[D", "\x1b[D", "X"], "AX" + cluster + "B", 2),
+            ]
+            for operation, actions, expected, caret in operations:
+                for field, x, y in [("title", 13, 9), ("search", 12, 6), ("description", 3, 8)]:
+                    name = f"grapheme-{label}-{operation}-{field}-{columns}"
+                    data = root / f"{name}.json"
+                    command(binary, data, "add", expected if field == "search" else "Grapheme regression")
+                    original = data.read_bytes()
+
+                    with terminal(binary, data, columns, rows) as session:
+                        session.send("/" if field == "search" else "e")
+                        if field == "description":
+                            session.click("[Edit description]")
+                        session.send("\x15")
+                        initial = "A" + cluster + "B"
+                        if operation == "left":
+                            session.type_text(initial)
+                            frame = session.frames[-1]
+                        else:
+                            frame = session.send("\x1b[200~" + initial + "\x1b[201~")
+                        assert f"\x1b[{y};{x + width + 2}H\x1b[?25h".encode() in frame, name
+
+                        for action in actions:
+                            frame = session.send(action)
+                        assert f"\x1b[{y};{x + caret}H\x1b[?25h".encode() in frame, name
+                        evidence.joinpath(name + ".ansi").write_bytes(frame)
+                        assert data.read_bytes() == original
+
+                        if field == "search":
+                            selected = re.search(rb"#(\d+) /", frame)
+                            assert selected and int(selected[1]) == 1, name
+                            runs = re.findall(rb"\x1b\[6;1H(.*?)(?=\x1b\[\d+;\d+H)", frame, re.S)
+                            assert runs and expected.encode() in runs[-1], name
+                            session.send("\x1b")
+                        else:
+                            session.click("[Save]")
+                        session.finish()
+
+                    task = json.loads(command(binary, data, "list", "--json").stdout)[0]
+                    actual = task["notes" if field == "description" else "title"]
+                    assert actual == expected, (name, actual, expected)
+                    if field == "search":
+                        assert data.read_bytes() == original
+                    evidence.joinpath(name + ".json").write_text(json.dumps({
+                        "initial": initial, "actions": actions, "expected": expected,
+                        "actual": actual, "caret": [x + caret, y],
+                    }, ensure_ascii=True, indent=2), encoding="utf-8")
+
+        print(f"PASS: grapheme arrows/deletion, native caret and saved bytes in all three fields at {columns}x{rows}")
+
+def grapheme_merge_checks(binary: str, root: Path, evidence: Path) -> None:
+    woman, laptop = "\U0001f469", "\U0001f4bb"
+    first, second, third = "\U0001f1fa", "\U0001f1f8", "\U0001f1e8"
+    cases = [
+        ("leading-mark", "\u0301B", ["\x1b[H", "e", "X"], "e\u0301XB", 2),
+        ("join", woman + laptop + "B", ["\x1b[H", "\x1b[C", "\u200d", "X"], woman + "\u200d" + laptop + "XB", 3),
+        ("ri-insert", second + third + "B", ["\x1b[H", first, "X"], first + second + "X" + third + "B", 3),
+        ("ri-delete", first + "X" + second + third + "B", ["\x1b[H", "\x1b[C", "\x1b[3~", "Y"], "Y" + first + second + third + "B", 1),
+        ("ri-backspace", first + "X" + second + third + "B", ["\x1b[H", "\x1b[C", "\x1b[C", "\x7f", "Y"], "Y" + first + second + third + "B", 1),
+    ]
+    for columns, rows in [(48, 20), (120, 32)]:
+        for name, initial, actions, expected, caret in cases:
+            for field, x, y in [("title", 13, 9), ("search", 12, 6), ("description", 3, 8)]:
+                label = f"merge-{name}-{field}-{columns}"
+                data = root / f"{label}.json"
+                command(binary, data, "add", expected if field == "search" else "Merge regression")
+                original = data.read_bytes()
+                with terminal(binary, data, columns, rows) as session:
+                    session.send("/" if field == "search" else "e")
+                    if field == "description":
+                        session.click("[Edit description]")
+                    session.send("\x15")
+                    session.send("\x1b[200~" + initial + "\x1b[201~")
+                    for action in actions:
+                        frame = session.send(action)
+                    assert f"\x1b[{y};{x + caret}H\x1b[?25h".encode() in frame, label
+                    evidence.joinpath(label + ".ansi").write_bytes(frame)
+                    if field == "search":
+                        selected = re.search(rb"#(\d+) /", frame)
+                        assert selected and int(selected[1]) == 1, label
+                        runs = re.findall(rb"\x1b\[6;1H(.*?)(?=\x1b\[\d+;\d+H)", frame, re.S)
+                        assert runs and expected.encode() in runs[-1], label
+                        session.send("\x1b")
+                    else:
+                        session.click("[Save]")
+                    session.finish()
+                task = json.loads(command(binary, data, "list", "--json").stdout)[0]
+                assert task["notes" if field == "description" else "title"] == expected, label
+                if field == "search":
+                    assert data.read_bytes() == original
+
+    print("PASS: insertion snaps forward and deletion snaps backward after whole-field resegmentation")
+
+def grapheme_geometry_checks(binary: str, root: Path, evidence: Path) -> None:
+    cluster = "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466"
+    for columns, rows in [(48, 20), (120, 32)]:
+        for field, x, y in [("title", 13, 9), ("search", 12, 6)]:
+            width = columns - 22 if field == "search" else columns - (48 if columns >= 110 else 14)
+            # Search leaves one extra display cell beyond its scrolling budget.
+            run_width = width + (field == "search")
+            text = "a" * (run_width - 1) + cluster + "B"
+            data = root / f"viewport-{field}-{columns}.json"
+            command(binary, data, "add", text)
+            original = data.read_bytes()
+            with terminal(binary, data, columns, rows) as session:
+                session.send("/" if field == "search" else "e")
+                if field == "search":
+                    session.send("\x1b[200~" + text + "\x1b[201~")
+                frame = session.send("\x1b[F")
+                assert f"\x1b[{y};{x + width - 1}H\x1b[?25h".encode() in frame
+                assert ("a" * (width - 4) + cluster + "B").encode() in frame
+
+                session.send("\x1b[D")
+                frame = session.send("\x1b[D")
+                assert f"\x1b[{y};{x + width - 2}H\x1b[?25h".encode() in frame
+                assert ("a" * (width - 2) + cluster).encode() in frame
+                evidence.joinpath(f"viewport-{field}-{columns}.ansi").write_bytes(frame)
+
+                frame = session.send("\x1b[H")
+                run_x = 1 if field == "search" else x
+                runs = re.findall(fr"\x1b\[{y};{run_x}H(.*?)(?=\x1b\[\d+;\d+H)".encode(), frame, re.S)
+                # Ignore the initial row clear; inspect the actual positioned text run.
+                assert runs and cluster.encode() not in runs[-1]
+                assert ("a" * (run_width - 1) + " ").encode() in runs[-1]
+                assert f"\x1b[{y};{x}H\x1b[?25h".encode() in frame
+                session.send("\x1b")
+                session.finish()
+            assert data.read_bytes() == original
+
+        # A two-cell family cannot be split into the one cell remaining on row one.
+        line_width = columns - 5
+        text = "a" * (line_width - 1) + cluster + "B"
+        data = root / f"grapheme-wrap-{columns}.json"
+        command(binary, data, "add", "Wrap regression", "--notes", text)
+        original = data.read_bytes()
+        with terminal(binary, data, columns, rows) as session:
+            session.send("e")
+            frame = session.click("[Edit description]")
+            assert b"\x1b[9;6H\x1b[?25h" in frame
+            frame = session.send("\x1b[A")
+            assert b"\x1b[8;6H\x1b[?25h" in frame
+            frame = session.send("\x1b[B")
+            assert b"\x1b[9;6H\x1b[?25h" in frame
+            for cell in (3, 4):
+                session.send(f"\x1b[<0;{cell};9M")
+                frame = session.send(f"\x1b[<0;{cell};9m")
+                assert b"\x1b[9;3H\x1b[?25h" in frame
+            session.send("\x1b[<0;5;9M")
+            frame = session.send("\x1b[<0;5;9m")
+            assert b"\x1b[9;5H\x1b[?25h" in frame
+            session.send("\x1b[D")
+            frame = session.send("X")
+            assert b"\x1b[9;3H\x1b[?25h" in frame
+            evidence.joinpath(f"grapheme-wrap-{columns}.ansi").write_bytes(frame)
+            assert data.read_bytes() == original
+            session.click("[Save]")
+            session.finish()
+        task = json.loads(command(binary, data, "list", "--json").stdout)[0]
+        assert task["notes"] == "a" * (line_width - 1) + "X" + cluster + "B"
+
+    print("PASS: whole-cluster viewport edges, wrapping, vertical movement and mouse cell mapping")
+
+def normalized_limit_checks(binary: str, root: Path, evidence: Path) -> None:
+    for columns, rows in [(48, 20), (120, 32)]:
+        for field, limit in [("title", 4096), ("search", 1024)]:
+            cases = [
+                ("crlf", "A" * (limit - 2), "\r\nB", " B", True),
+                ("cr-tab", "A" * (limit - 3), "\r\tB", "  B", True),
+                ("exact-utf8", "A" * (limit - 4), "e\u0301B", "e\u0301B", True),
+                ("reject-one-byte", "A" * (limit - 1), "\r\nB", "", False),
+                ("reject-cluster", "A" * (limit - 1), "e\u0301B", "", False),
+            ]
+            for name, prefix, pasted, normalized, accepted in cases:
+                label = f"limit-{name}-{field}-{columns}"
+                expected = prefix + normalized if accepted else prefix[:-1] + "Z"
+                data = root / f"{label}.json"
+                command(binary, data, "add", expected if field == "search" else "Limit regression")
+                original = data.read_bytes()
+                with terminal(binary, data, columns, rows) as session:
+                    session.send("/" if field == "search" else "e")
+                    session.send("\x15")
+                    before = session.send("\x1b[200~" + prefix + "\x1b[201~")
+                    frame = session.send("\x1b[200~" + pasted + "\x1b[201~")
+                    if not accepted:
+                        cursor = rb"\x1b\[(\d+);(\d+)H\x1b\[\?25h"
+                        assert re.findall(cursor, frame) == re.findall(cursor, before), label
+                        session.send("\x7f")
+                        frame = session.send("Z")
+                    evidence.joinpath(label + ".ansi").write_bytes(frame)
+                    if field == "search":
+                        selected = re.search(rb"#(\d+) /", frame)
+                        assert selected and int(selected[1]) == 1, label
+                        # Matching alone is insufficient: the rejected prefix also matches.
+                        runs = re.findall(rb"\x1b\[6;1H(.*?)(?=\x1b\[\d+;\d+H)", frame, re.S)
+                        assert runs and expected[-10:].encode() in runs[-1], label
+                        session.send("\x1b")
+                    else:
+                        session.click("[Save]")
+                    session.finish()
+                task = json.loads(command(binary, data, "list", "--json").stdout)[0]
+                assert task["title"] == expected, label
+                if field == "search":
+                    assert data.read_bytes() == original
+
+        data = root / f"oversized-loaded-{columns}.json"
+        command(binary, data, "add", "A" * 4100)
+        with terminal(binary, data, columns, rows) as session:
+            session.send("e")
+            session.send("\x1b[H")
+            session.send("\x1b[3~")
+            session.send("X")  # Still over budget: insertion is rejected, deletion remains valid.
+            session.send("\x1b[F")
+            session.send("\x7f")
+            session.click("[Edit description]")
+            session.send("\x1b[200~" + "N" * 5000 + "\r\n\tB\x1b[201~")
+            session.click("[Save]")
+            session.finish()
+        task = json.loads(command(binary, data, "list", "--json").stdout)[0]
+        assert task["title"] == "A" * 4098
+        assert task["notes"] == "N" * 5000 + "\n\tB"
+
+    print("PASS: normalized 4096/1024-byte limits, whole-event rejection and editable oversized fields")
+
 def motion_checks(binary: str, root: Path, evidence: Path) -> None:
     """Visual ticks are observable, incremental, read-only, and suppressible."""
     for columns, rows in [(48, 20), (80, 24), (120, 40)]:
@@ -771,6 +1014,10 @@ def main() -> None:
         description_checks(binary, root, evidence)
         cursor_boundary_checks(binary, root)
         caret_rendering_checks(binary, root, evidence)
+        grapheme_editing_checks(binary, root, evidence)
+        grapheme_merge_checks(binary, root, evidence)
+        grapheme_geometry_checks(binary, root, evidence)
+        normalized_limit_checks(binary, root, evidence)
         motion_checks(binary, root, evidence)
         help_checks(binary, root)
 

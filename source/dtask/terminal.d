@@ -2,21 +2,15 @@ module dtask.terminal;
 
 import core.stdc.errno : errno, EINTR;
 import core.stdc.stdlib : atexit;
-import core.sys.posix.locale : locale_t, newlocale, freelocale, uselocale, LC_CTYPE_MASK;
 import core.sys.posix.poll : poll, pollfd, POLLIN, POLLERR, POLLHUP, POLLNVAL;
 import core.sys.posix.signal;
 import core.sys.posix.sys.ioctl : ioctl, winsize, TIOCGWINSZ;
 import core.sys.posix.termios;
 import core.sys.posix.unistd : isatty, read, posixWrite = write, _exit;
 import core.time : MonoTime, dur;
+import dtask.text : fitText, graphemePrefixBytes;
 import std.exception : enforce;
 import std.utf : encode;
-
-/*
- * POSIX wcwidth is missing from druntime's headers. wchar_t is a 32-bit
- * scalar on the supported POSIX platforms (not Windows' 16-bit wchar_t).
- */
-private extern (C) int wcwidth(dchar value) nothrow @nogc;
 
 /** Event discriminator; none means no actionable input, interrupt requests shutdown. */
 enum Key
@@ -55,7 +49,7 @@ struct InputDecoder
 {
     /** Maximum buffered CSI/SS3 parameter bytes; longer sequences are discarded. */
     enum maxSequence = 128;
-    /** Maximum UTF-8 paste bytes; excess input is discarded without splitting a scalar. */
+    /** Maximum UTF-8 paste bytes; excess input is discarded without splitting a cluster. */
     enum maxPaste = 65_536;
 
     private enum State { ground, escape, intermediate, csi, ss3, controlString, stringEscape, legacyMouse }
@@ -118,10 +112,21 @@ struct InputDecoder
 
         if (pasting)
         {
-            if (!pasteFull && paste.length + count <= maxPaste)
+            if (!pasteFull)
+            {
                 paste ~= bytes[0 .. count];
-            else
-                pasteFull = true;
+
+                if (paste.length > maxPaste)
+                {
+                    /*
+                     * One overflowing scalar (at most four bytes) reveals a
+                     * continuation of the final cluster. Segment once, then
+                     * discard the tail while preserving control quarantine.
+                     */
+                    paste.length = graphemePrefixBytes(cast(string) paste, maxPaste);
+                    pasteFull = true;
+                }
+            }
 
             return Event.init;
         }
@@ -504,69 +509,15 @@ package struct InputTiming
 /**
  * Sanitize text and clip/pad it to exactly width terminal cells; nonpositive widths return empty.
  *
- * Uses InputDecoder to remove terminal controls and libc wcwidth for cell counts.
- * Newlines and tabs become spaces. Clipping stops at the first non-fitting glyph,
- * retaining combining marks with their base but dropping leading combining marks.
+ * Uses the shared stored-text sanitizer and modern grapheme cell widths.
+ * CR, LF and tabs become spaces. Clipping stops at the first non-fitting cluster,
+ * dropping leading mark-only clusters. Stored text has no keyboard paste cap.
  * Width lookup uses a private thread locale and leaves the process locale unchanged.
  * Throws: Exception if a character-width locale cannot be created or selected.
  */
 string fit(string text, int width)
 {
-    if (width <= 0)
-        return "";
-
-    locale_t locale = newlocale(LC_CTYPE_MASK, "C.UTF-8", null);
-    if (locale is null)
-        locale = newlocale(LC_CTYPE_MASK, "en_US.UTF-8", null);
-    if (locale is null)
-        locale = newlocale(LC_CTYPE_MASK, "", null);
-
-    enforce(locale !is null, "Cannot create a character-width locale");
-    scope (exit) freelocale(locale);
-
-    auto previous = uselocale(locale);
-    enforce(previous !is null, "Cannot select a character-width locale");
-    scope (exit) uselocale(previous);
-
-    InputDecoder decoder;
-    char[] result;
-    int cells;
-    bool clipped;
-
-    foreach (ubyte value; cast(const(ubyte)[]) text)
-    {
-        auto event = decoder.feed(value);
-        if (event.key == Key.enter || event.key == Key.tab)
-            event = Event(Key.text, " ");
-
-        if (event.key != Key.text)
-            continue;
-
-        foreach (dchar glyph; event.text)
-        {
-            if (glyph == '\r' || glyph == '\n' || glyph == '\t')
-                glyph = ' ';
-
-            const count = wcwidth(glyph);
-            if (count < 0 || (count == 0 && cells == 0))
-                continue;
-
-            if (clipped || count > width - cells)
-            {
-                clipped = true;
-                continue;
-            }
-
-            char[4] bytes;
-            auto length = encode(bytes, glyph);
-            result ~= bytes[0 .. length];
-            cells += count;
-        }
-    }
-
-    result.length += width - cells;
-    result[$ - (width - cells) .. $] = ' ';
-    return cast(string) result;
+    return fitText(text, width);
 }
 
 /*

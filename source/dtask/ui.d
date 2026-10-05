@@ -6,7 +6,7 @@ import dtask.theme;
 import dtask.widgets;
 import dtask.motion;
 import dtask.visuals;
-import dtask.text : wrapText, textWidth;
+import dtask.text : graphemeBoundaries, wrapText, textWidth;
 import core.time : MonoTime;
 import std.algorithm : min, max;
 import std.conv : to;
@@ -731,19 +731,28 @@ private final class Workspace
     string editable(string text, size_t cursor, int width, out int cursorColumn)
     {
         auto points = to!dstring(text);
+        auto boundaries = graphemeBoundaries(points);
+        size_t boundary;
+
+        while (boundaries[boundary] < cursor)
+            ++boundary;
+
         auto start = cursor;
-        auto reserved = cursor < points.length ? max(1, textWidth(to!string(points[cursor]))) : 1;
+        auto reserved = cursor < points.length
+            ? max(1, textWidth(to!string(points[cursor .. boundaries[boundary + 1]]))) : 1;
         cursorColumn = 0;
 
-        while (start > 0)
+        while (boundary > 0)
         {
-            auto cells = textWidth(to!string(points[start - 1]));
+            auto previous = boundaries[boundary - 1];
+            auto cells = textWidth(to!string(points[previous .. start]));
 
             if (cursorColumn + cells > width - reserved)
                 break;
 
             cursorColumn += cells;
-            --start;
+            start = previous;
+            --boundary;
         }
 
         return to!string(points[start .. $]);
@@ -1080,35 +1089,55 @@ private final class Workspace
         dropTarget = -1;
     }
 
-    /* Cursor indices count Unicode code points, never partial UTF-8 bytes. */
+    /* Code-point offsets are always boundaries in the whole current field. */
     void editText(ref string text, ref size_t cursor, Event event, size_t limit)
     {
         auto points = to!dstring(text);
+        auto boundaries = graphemeBoundaries(points);
+        size_t boundary;
+
+        while (boundaries[boundary] < cursor)
+            ++boundary;
+
+        bool changed;
+        bool inserted;
 
         switch (event.key)
         {
-            case Key.left: if (cursor > 0) --cursor; break;
-            case Key.right: if (cursor < points.length) ++cursor; break;
+            case Key.left:
+                if (boundary > 0)
+                    cursor = boundaries[boundary - 1];
+                break;
+            case Key.right:
+                if (boundary + 1 < boundaries.length)
+                    cursor = boundaries[boundary + 1];
+                break;
             case Key.home: cursor = 0; break;
             case Key.end: cursor = points.length; break;
             case Key.backspace:
                 if (cursor > 0)
                 {
-                    points = points[0 .. cursor - 1] ~ points[cursor .. $];
-                    --cursor;
+                    auto previous = boundaries[boundary - 1];
+                    points = points[0 .. previous] ~ points[cursor .. $];
+                    cursor = previous;
+                    changed = true;
                 }
                 break;
             case Key.deleteKey:
                 if (cursor < points.length)
-                    points = points[0 .. cursor] ~ points[cursor + 1 .. $];
+                {
+                    points = points[0 .. cursor] ~ points[boundaries[boundary + 1] .. $];
+                    changed = true;
+                }
                 break;
             case Key.text:
-                if (event.text == "\x15")
+                if (!event.pasted && event.text == "\x15")
                 {
                     points = ""d;
                     cursor = 0;
+                    changed = true;
                 }
-                else if (text.length + event.text.length <= limit)
+                else
                 {
                     auto input = event.text;
 
@@ -1120,15 +1149,38 @@ private final class Workspace
                             input = input.replace("\n", " ").replace("\t", " ");
                     }
 
-                    const inserted = to!dstring(input);
-                    points = points[0 .. cursor] ~ inserted ~ points[cursor .. $];
-                    cursor += inserted.length;
+                    /* Reject the entire normalized event without moving the caret. */
+                    if (text.length > limit || input.length > limit - text.length)
+                        return;
+
+                    const added = to!dstring(input);
+                    points = points[0 .. cursor] ~ added ~ points[cursor .. $];
+                    cursor += added.length;
+                    changed = true;
+                    inserted = true;
                 }
                 break;
             default: break;
         }
 
-        text = to!string(points);
+        if (changed)
+        {
+            /* Insertion/deletion can join either side or change RI pairing. */
+            boundaries = graphemeBoundaries(points);
+            size_t snapped;
+
+            foreach (position; boundaries)
+            {
+                if (inserted || position <= cursor)
+                    snapped = position;
+
+                if (position >= cursor)
+                    break;
+            }
+
+            cursor = snapped;
+            text = to!string(points);
+        }
     }
 
     void handle(Event event)

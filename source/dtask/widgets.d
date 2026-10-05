@@ -4,7 +4,8 @@ import std.datetime : Date;
 import std.format : format;
 import std.algorithm : min, max;
 import std.conv : to;
-import dtask.text : textWidth, wrapText;
+import std.exception : enforce;
+import dtask.text : graphemeBoundaries, textWidth, wrapText;
 
 /** A help shortcut, section heading, or wrapped continuation line. */
 struct HelpRow
@@ -88,35 +89,44 @@ struct DraftLine
 /** Hard-wrap editable text while retaining all whitespace and cursor positions. */
 DraftLine[] draftLines(string text, int width)
 {
+    if (width <= 0)
+        return [];
+
     auto points = to!dstring(text);
+    auto boundaries = graphemeBoundaries(points);
     DraftLine[] lines;
     size_t start;
     int cells;
-    string rendered;
+    char[] rendered;
 
-    foreach (index, point; points)
+    foreach (boundary; 0 .. boundaries.length - 1)
     {
-        auto glyph = to!string(point);
-        auto count = point == '\t' ? 4 - cells % 4 : textWidth(glyph);
+        const index = boundaries[boundary];
+        const end = boundaries[boundary + 1];
+        auto glyph = to!string(points[index .. end]);
+        const newline = points[end - 1] == '\n';
+        const tab = points[index] == '\t';
+        auto count = tab ? 4 - cells % 4 : textWidth(glyph);
 
-        if (point == '\n' || (cells + count > width && cells > 0))
+        if (newline || (cells + count > width && cells > 0))
         {
-            lines ~= DraftLine(rendered, start, index);
-            rendered = "";
+            lines ~= DraftLine(cast(string) rendered, start, index);
+            rendered = null;
             cells = 0;
-            start = point == '\n' ? index + 1 : index;
+            start = newline ? end : index;
 
-            if (point == '\n')
+            if (newline)
                 continue;
 
-            count = point == '\t' ? 4 : textWidth(glyph);
+            count = tab ? 4 : count;
         }
 
-        rendered ~= point == '\t' ? "    "[0 .. count] : glyph;
+        enforce(count <= width, "Draft width cannot hold a grapheme");
+        rendered ~= tab ? "    "[0 .. count] : glyph;
         cells += count;
     }
 
-    lines ~= DraftLine(rendered, start, points.length);
+    lines ~= DraftLine(cast(string) rendered, start, points.length);
     return lines;
 }
 
@@ -142,27 +152,37 @@ int draftCursorRow(DraftLine[] lines, size_t cursor)
 size_t draftCursorAt(string text, DraftLine line, int column)
 {
     auto points = to!dstring(text);
+    auto boundaries = graphemeBoundaries(points);
     int cells;
     auto cursor = line.start;
+    auto last = line.start;
+    column = max(0, column);
 
-    while (cursor < line.end)
+    foreach (boundary; 0 .. boundaries.length - 1)
     {
-        auto count = points[cursor] == '\t' ? 4 - cells % 4 : textWidth(to!string(points[cursor]));
+        const start = boundaries[boundary];
+        const end = boundaries[boundary + 1];
+
+        if (start < line.start)
+            continue;
+
+        if (start >= line.end)
+            break;
+
+        auto count = points[start] == '\t' ? 4 - cells % 4
+            : textWidth(to!string(points[start .. end]));
 
         if (cells + count > column)
             break;
 
         cells += count;
-        ++cursor;
+        last = start;
+        cursor = end;
     }
 
     if (cursor == line.end && cursor > line.start
-        && cursor < points.length && points[cursor] != '\n')
-    {
-        do
-            --cursor;
-        while (cursor > line.start && textWidth(to!string(points[cursor])) == 0);
-    }
+        && cursor < points.length && points[cursor] != '\n' && points[cursor] != '\r')
+        cursor = last;
 
     return cursor;
 }
