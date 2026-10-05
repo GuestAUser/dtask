@@ -13,18 +13,33 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        compiler: [ldc-1.43.0, ldc-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      DTASK_EVIDENCE_DIR: ${{ github.workspace }}/ci-evidence/terminal
     steps:
       - uses: actions/checkout@v4
       - uses: dlang-community/setup-dlang@v2
         with:
-          compiler: ldc-latest
+          compiler: ${{ matrix.compiler }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Record toolchain versions
+        run: |
+          mkdir -p ci-evidence
+          {
+            uname -a
+            ldc2 --version
+            dub --version
+            python3 --version
+          } 2>&1 | tee ci-evidence/versions.log
       - name: Build and exercise the CLI and real terminal
         run: |
-          make test DC=ldc2
+          make test DC=ldc2 2>&1 | tee ci-evidence/tests.log
           ./bin/dtask --version
       - name: Build with DUB
         run: |
@@ -43,3 +58,89 @@ jobs:
           export PATH="$prefix/bin:$PATH"
           test "$(command -v dtask)" = "$prefix/bin/dtask"
           dtask --version
+      - name: Retain diagnostics and terminal captures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ matrix.os }}-${{ matrix.compiler }}
+          path: ci-evidence/
+
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start FreeBSD 14.4 x86_64
+        uses: vmactions/freebsd-vm@v1.5.9
+        with:
+          release: "14.4"
+          arch: x86_64
+          sync: rsync
+          copyback: true
+      # The custom shell copies evidence back even when the command fails.
+      - name: Verify FreeBSD toolchain, tests, DUB and installation
+        shell: freebsd {0}
+        run: |
+          set -eu
+          mkdir -p ci-evidence
+          log="$PWD/ci-evidence/validation.log"
+
+          show_log() {
+            status=$?
+            cat "$log"
+            exit "$status"
+          }
+
+          trap show_log 0
+
+          (
+            set -eux
+            # Use official latest packages rather than an older quarterly LDC.
+            mkdir -p /usr/local/etc/pkg/repos
+            printf '%s\n' "FreeBSD: { url: \"pkg+https://pkg.FreeBSD.org/\${ABI}/latest\" }" \
+              > /usr/local/etc/pkg/repos/FreeBSD.conf
+            pkg install -y ldc dub gmake python3
+
+            freebsd-version
+            uname -a
+            pkg info ldc dub gmake python3
+            ldc2 --version
+            dub --version
+            python3 --version
+            gmake --version
+            python3 - <<'PY'
+          import re
+          import subprocess
+
+          output = subprocess.check_output(["ldc2", "--version"], text=True)
+          version = re.search(r"^LDC - the LLVM D compiler \((\d+)\.(\d+)\.(\d+)\):", output)
+
+          if version is None or tuple(map(int, version.groups())) < (1, 43, 0):
+              raise SystemExit("FreeBSD validation requires LDC >= 1.43.0")
+          PY
+
+            export DTASK_EVIDENCE_DIR="$PWD/ci-evidence/terminal"
+            gmake test DC=ldc2
+            ./bin/dtask --version
+            dub build --compiler=ldc2 --build=release
+            ./bin/dtask --version
+
+            stage="$PWD/ci-evidence/staged install"
+            gmake install DC=ldc2 PREFIX=/usr/local DESTDIR="$stage"
+            "$stage/usr/local/bin/dtask" --version
+
+            sh -n install.sh
+            workspace=$PWD
+            mkdir -p ci-evidence/installer-cwd
+            cd ci-evidence/installer-cwd
+            prefix="$PWD/dtask user install"
+            MAKE=gmake DC=ldc2 "$workspace/install.sh" --prefix "$prefix"
+            export PATH="$prefix/bin:$PATH"
+            test "$(command -v dtask)" = "$prefix/bin/dtask"
+            dtask --version
+          ) >"$log" 2>&1
+      - name: Retain diagnostics and terminal captures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-freebsd-14.4-x86_64
+          path: ci-evidence/

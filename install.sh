@@ -15,6 +15,7 @@ usage() {
         'Default prefix: ~/.local (executable: PREFIX/bin/dtask).' \
         '--prefix PATH overrides the PREFIX environment variable.' \
         'Environment: DC (default ldc2), PREFIX, DESTDIR, BIN_DIR (default bin).' \
+        'MAKE selects the make executable (default make; use gmake on FreeBSD).' \
         'Relative prefix and staging paths are resolved from your current directory.' \
         'DC must be a single command/path; DC and BIN_DIR cannot contain spaces' \
         'or shell/make metacharacters because of the existing Makefile.' \
@@ -71,6 +72,7 @@ fi
 destdir=${DESTDIR-}
 dc=${DC-ldc2}
 bin_dir=${BIN_DIR-bin}
+make_command=${MAKE-make}
 invocation_dir=$(pwd -P) || fail 'cannot resolve current directory'
 
 case $prefix in
@@ -108,12 +110,12 @@ esac
 script_dir=$(CDPATH='' cd -P "${script%/*}" && pwd -P) || fail 'cannot locate project directory'
 cd "$script_dir" || fail 'cannot enter project directory'
 
-for tool in make install mkdir "$dc"; do
+for tool in "$make_command" install mkdir "$dc"; do
     command -v "$tool" >/dev/null 2>&1 || fail "required tool not found: $tool"
 done
 
-if ! make install "DC=$dc" "PREFIX=$prefix" "DESTDIR=$destdir" "BIN_DIR=$bin_dir"; then
-    fail 'make install failed; dtask was not successfully installed'
+if ! "$make_command" install "DC=$dc" "PREFIX=$prefix" "DESTDIR=$destdir" "BIN_DIR=$bin_dir"; then
+    fail "$make_command install failed; dtask was not successfully installed"
 fi
 
 installed_bin=$destdir$prefix/bin
