@@ -34,3 +34,12 @@ jobs:
         run: |
           make install DC=ldc2 PREFIX=/usr/local DESTDIR="${RUNNER_TEMP}/dtask-install"
           "${RUNNER_TEMP}/dtask-install/usr/local/bin/dtask" --version
+      - name: Verify installer and global launch
+        run: |
+          sh -n install.sh
+          prefix="${RUNNER_TEMP}/dtask user install"
+          cd "${RUNNER_TEMP}"
+          DC=ldc2 "${GITHUB_WORKSPACE}/install.sh" --prefix "$prefix"
+          export PATH="$prefix/bin:$PATH"
+          test "$(command -v dtask)" = "$prefix/bin/dtask"
+          dtask --version
