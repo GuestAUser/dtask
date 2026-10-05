@@ -6,6 +6,40 @@ import dtask.text : textWidth;
 
 unittest
 {
+    const entries = [
+        HelpRow("", "A section heading", true),
+        HelpRow("Ctrl-U", "A long description that must wrap onto aligned continuation rows."),
+        HelpRow("", ""),
+        HelpRow("Enter", "Short text")
+    ];
+
+    foreach (width; [44, 56, 76])
+    {
+        auto lines = wrapHelpRows(entries, width);
+        assert(lines[0].heading && lines[0].key.length == 0);
+        assert(lines[1].key == entries[1].key);
+        size_t keys;
+        size_t blanks;
+
+        foreach (line; lines)
+        {
+            assert(textWidth(line.text) <= (line.heading ? width : width - helpKeyWidth));
+            assert(textWidth(line.key) < helpKeyWidth);
+
+            if (line.key.length)
+                ++keys;
+            else if (!line.text.length)
+                ++blanks;
+        }
+
+        assert(keys == 2);
+        assert(blanks == 1);
+        assert(lines[$ - 1].key == entries[$ - 1].key);
+    }
+}
+
+unittest
+{
     auto cell = CellRect(3, 8, 10, 2);
     assert(cell.contains(3, 8));
     assert(cell.contains(12, 9));

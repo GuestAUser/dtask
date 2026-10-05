@@ -4,7 +4,34 @@ import std.datetime : Date;
 import std.format : format;
 import std.algorithm : min, max;
 import std.conv : to;
-import dtask.text : textWidth;
+import dtask.text : textWidth, wrapText;
+
+/** A help shortcut, section heading, or wrapped continuation line. */
+struct HelpRow
+{
+    string key;
+    string text;
+    bool heading;
+}
+
+/** Reserved key column, shared by help wrapping and rendering. */
+enum helpKeyWidth = 18;
+
+/** Wrap descriptions without losing their key-column alignment. */
+HelpRow[] wrapHelpRows(scope const(HelpRow)[] entries, int width)
+{
+    HelpRow[] result;
+
+    foreach (entry; entries)
+    {
+        auto lines = wrapText(entry.text, entry.heading ? width : width - helpKeyWidth);
+
+        foreach (index, text; lines)
+            result ~= HelpRow(index == 0 ? entry.key : "", text, entry.heading);
+    }
+
+    return result;
+}
 
 /** Reserve unused workspace for a preview, without moving row eight or dates. */
 int taskListHeight(int columns, int rows, int count)

@@ -676,6 +676,46 @@ def motion_checks(binary: str, root: Path, evidence: Path) -> None:
 
     print("PASS: eased focus, interrupted input, incremental synchronized frames, reduced motion and resize")
 
+def help_checks(binary: str, root: Path) -> None:
+    def position(frame: bytes) -> tuple[int, int, int]:
+        match = re.search(rb"(\d+)-(\d+) / (\d+) lines", frame)
+        assert match, "Help must expose its scroll position"
+        return tuple(map(int, match.groups()))
+
+    for columns, rows in [(48, 20), (95, 24), (96, 24), (120, 32)]:
+        data = root / f"help-{columns}.json"
+        command(binary, data, "add", "Help regression task")
+        original = data.read_bytes()
+
+        with terminal(binary, data, columns, rows) as session:
+            first = session.send("?")
+            start, end, total = position(first)
+            assert start == 1 and end == min(total, rows - 9)
+            assert b"Help regression task" not in first
+            assert b"[Calendar]" not in first
+
+            page = session.send("\x1b[6~")
+            assert position(page)[0] == min(1 + rows - 9, max(1, total - (rows - 9) + 1))
+            assert position(session.send("\x1b[F"))[1] == total
+            assert position(session.send("\x1b[H"))[0] == 1
+            session.click("[Down]")
+            assert position(session.frames[-1])[0] == min(4, max(1, total - (rows - 9) + 1))
+            session.click("[Up]")
+            assert position(session.frames[-1])[0] == 1
+
+            session.send("\x1b[F")
+            session.resize(120 if columns < 96 else 48, 24)
+            os.kill(session.process.pid, signal.SIGWINCH)
+            start, end, total = position(session.frame())
+            assert 1 <= start <= end <= total
+            session.click("[Back]")
+            session.cell("Help regression task")
+            session.finish()
+
+        assert data.read_bytes() == original
+
+    print("PASS: dedicated help, page/home/end scrolling, controls and responsive reflow")
+
 def main() -> None:
     binary = str(Path(sys.argv[1]).resolve())
 
@@ -694,6 +734,7 @@ def main() -> None:
         cursor_boundary_checks(binary, root)
         caret_rendering_checks(binary, root, evidence)
         motion_checks(binary, root, evidence)
+        help_checks(binary, root)
 
     print("PASS: all integration checks")
 

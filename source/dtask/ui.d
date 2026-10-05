@@ -69,6 +69,7 @@ private final class Workspace
     size_t searchCursor;
     int field;
     int helpOffset;
+    int helpLength;
     ulong descriptionId;
     int descriptionOffset;
     int draftOffset;
@@ -112,7 +113,8 @@ private final class Workspace
         {
             terminal.size(columns, rows);
             visualTime = (MonoTime.currTime - origin).total!"msecs";
-            const animate = mode != Mode.edit && mode != Mode.descriptionEdit && mode != Mode.search;
+            const animate = mode != Mode.edit && mode != Mode.descriptionEdit
+                && mode != Mode.search && mode != Mode.help;
 
             if (dirty)
             {
@@ -314,6 +316,17 @@ private final class Workspace
         for (int row = 1; row <= rows; ++row)
             line(frame, row, "");
 
+        if (mode == Mode.help)
+        {
+            renderHelp(frame);
+            line(frame, rows, "");
+            terminal.write("\x1b[?2026h" ~ frame ~ "\x1b[?2026l" ~ reset);
+            previousRows = paintedRows;
+            paintedColumns = columns;
+            paintedHeight = rows;
+            return;
+        }
+
         size_t openCount;
         size_t completedCount;
         size_t overdueCount;
@@ -379,8 +392,6 @@ private final class Workspace
         {
             if (mode == Mode.edit)
                 renderForm(frame);
-            else if (mode == Mode.help)
-                renderHelp(frame);
             else
                 renderTasks(frame);
 
@@ -839,33 +850,107 @@ private final class Workspace
 
     void renderHelp(ref string frame)
     {
-        static immutable lines = [
-            "KEYBOARD & MOUSE",
-            "Drag a task onto a date section to schedule.",
-            "Or select a task and click a date / Calendar.",
-            "Outside drop, Esc or resize cancels a drag.",
-            "New / Edit: click priority and Pick date.",
-            "Save writes the draft; Cancel discards it.",
-            "j/k, arrows: select | wheel: scroll",
-            "n: new | e / Enter: edit | Space: done",
-            "v / Details: reader; wheel and PgUp/PgDn scroll",
-            "Description: Enter adds newline; Save applies",
-            "Description Back keeps draft; Cancel discards",
-            "p: priority | d: delete with confirmation",
-            "/: search | 1/2/3/4: Open/Today/All/Done",
-            "Text: arrows, Home/End, Delete, Ctrl-U",
-            "Dates: today, tomorrow, next week, +3d",
-            "Next week is next Monday; weekend Saturday.",
-            "m / FX: toggle motion; editing pauses effects",
-            "r: reload theme | q: quit | Esc: back"
+        static immutable left = [
+            HelpRow("", "NAVIGATE", true),
+            HelpRow("j / k, arrows", "Select a task"),
+            HelpRow("PgUp / PgDn", "Move one page"),
+            HelpRow("Home / End", "First or last task"),
+            HelpRow("1 / 2 / 3 / 4", "Open / Today / All / Done"),
+            HelpRow("/", "Search titles and notes"),
+            HelpRow("Esc", "Cancel or clear search"),
+            HelpRow("", ""),
+            HelpRow("", "TASKS", true),
+            HelpRow("n", "New task"),
+            HelpRow("e / Enter", "Edit selected task"),
+            HelpRow("v / Details", "Read the full description"),
+            HelpRow("Space", "Complete or reopen"),
+            HelpRow("p", "Cycle priority"),
+            HelpRow("d", "Delete with confirmation"),
+            HelpRow("", ""),
+            HelpRow("", "MOUSE", true),
+            HelpRow("Click a row", "Select a task"),
+            HelpRow("Checkbox", "Complete or reopen"),
+            HelpRow("Drag to date", "Schedule the task"),
+            HelpRow("Wheel", "Scroll the current view"),
+            HelpRow("Esc / resize", "Cancel a drag without changes")
+        ];
+        static immutable right = [
+            HelpRow("", "EDIT & WRITE", true),
+            HelpRow("Tab", "Next field; back from notes"),
+            HelpRow("Enter", "Save fields; newline in notes"),
+            HelpRow("Left / Right", "Move the text cursor"),
+            HelpRow("Home / End", "Start or end of text"),
+            HelpRow("Backspace / Del", "Remove text at the cursor"),
+            HelpRow("Ctrl-U", "Clear the current field"),
+            HelpRow("Save", "Apply the task draft"),
+            HelpRow("Back", "Keep notes in the draft"),
+            HelpRow("Cancel / Esc", "Discard the task draft"),
+            HelpRow("", ""),
+            HelpRow("", "DATES", true),
+            HelpRow("Calendar", "Pick a specific day"),
+            HelpRow("today / tomorrow", "Schedule a nearby day"),
+            HelpRow("next week", "Next Monday"),
+            HelpRow("weekend", "Nearest Saturday"),
+            HelpRow("+7d", "Seven days from today"),
+            HelpRow("none", "Remove the due date"),
+            HelpRow("", ""),
+            HelpRow("", "WORKSPACE", true),
+            HelpRow("m / FX", "Toggle motion effects"),
+            HelpRow("r", "Reload the theme"),
+            HelpRow("q / Ctrl-C", "Quit dtask")
         ];
 
-        foreach (row; 0 .. listHeight)
+        const wide = columns >= 96;
+        const width = min(columns - 4, 116);
+        const x = (columns - width) / 2 + 1;
+        const columnWidth = wide ? (width - 4) / 2 : width;
+        const height = rows - 9;
+        auto first = wrapHelpRows(wide ? left : left ~ [HelpRow("", "")] ~ right, columnWidth);
+        auto second = wide ? wrapHelpRows(right, columnWidth) : null;
+        helpLength = cast(int) max(first.length, second.length);
+        scrollHelp(0);
+
+        at(frame, x, 2, "HELP / KEYBOARD & MOUSE", width, theme.foreground);
+        at(frame, x, 3, "Shortcuts for your workspace. Esc: back.", width, theme.muted);
+
+        foreach (column; 0 .. (wide ? 2 : 1))
         {
-            auto index = row + helpOffset;
-            at(frame, 3, 8 + row, index < lines.length ? lines[index] : "", listWidth - 4,
-                row == 0 ? theme.accent : theme.foreground);
+            auto content = column == 0 ? first : second;
+            const start = x + column * (columnWidth + 4);
+
+            foreach (row; 0 .. height)
+            {
+                const index = helpOffset + row;
+
+                if (index >= content.length)
+                    continue;
+
+                auto entry = content[index];
+
+                if (entry.heading)
+                    at(frame, start, 5 + row, entry.text, columnWidth, theme.foreground, theme.panel);
+                else
+                {
+                    at(frame, start, 5 + row, entry.key, helpKeyWidth, theme.accent);
+                    at(frame, start + helpKeyWidth, 5 + row, entry.text,
+                        columnWidth - helpKeyWidth, theme.foreground);
+                }
+            }
         }
+
+        line(frame, rows - 4, ink(theme.border, fit("  " ~ repeat("-", columns - 4), columns)));
+        line(frame, rows - 3, ink(theme.accent, "  [Back]  [Up] [Down]"));
+        auto position = to!string(helpOffset + 1) ~ "-"
+            ~ to!string(min(helpLength, helpOffset + height)) ~ " / " ~ to!string(helpLength);
+        line(frame, rows - 2, ink(theme.muted, fit("  " ~ position ~ " lines", columns)));
+        line(frame, rows - 1, ink(theme.muted,
+            fit("  Arrows: scroll | PgUp/PgDn: page | Home/End", columns), theme.panel));
+    }
+
+    void scrollHelp(int amount, bool absolute = false)
+    {
+        helpOffset = max(0, min(max(0, helpLength - (rows - 9)),
+            absolute ? amount : helpOffset + amount));
     }
 
     void beginEdit(bool existing)
@@ -1168,10 +1253,12 @@ private final class Workspace
         {
             if (event.key == Key.escape || (event.key == Key.text && (event.text == "?" || event.text == "q")))
                 mode = Mode.browse;
-            else if (event.key == Key.down || event.key == Key.pageDown)
-                helpOffset = min(max(0, 18 - listHeight), helpOffset + 1);
-            else if (event.key == Key.up || event.key == Key.pageUp)
-                helpOffset = max(0, helpOffset - 1);
+            else if (event.key == Key.down || event.key == Key.up)
+                scrollHelp(event.key == Key.down ? 1 : -1);
+            else if (event.key == Key.pageDown || event.key == Key.pageUp)
+                scrollHelp(event.key == Key.pageDown ? rows - 9 : -(rows - 9));
+            else if (event.key == Key.home || event.key == Key.end)
+                scrollHelp(event.key == Key.home ? 0 : int.max, true);
 
             return;
         }
@@ -1282,7 +1369,7 @@ private final class Workspace
     {
         const left = (event.button & 3) == 0 && event.button < 64;
 
-        if (left && !event.release && !event.motion && event.y == 4
+        if (mode != Mode.help && left && !event.release && !event.motion && event.y == 4
             && event.x >= columns - 20 && event.x < columns - 12)
         {
             clearDrag();
@@ -1349,7 +1436,7 @@ private final class Workspace
                 followDraftCursor = false;
             }
             else if (mode == Mode.help)
-                helpOffset = max(0, min(max(0, 18 - listHeight), helpOffset + (event.button == 64 ? -1 : 1)));
+                scrollHelp(event.button == 64 ? -3 : 3);
             else if (mode == Mode.browse || mode == Mode.search)
                 selected += event.button == 64 ? -3 : 3;
             else if (mode == Mode.calendar)
@@ -1426,6 +1513,10 @@ private final class Workspace
         {
             if (event.y == rows - 3 && event.x >= 3 && event.x <= 8)
                 mode = Mode.browse;
+            else if (event.y == rows - 3 && event.x >= 11 && event.x <= 14)
+                scrollHelp(-3);
+            else if (event.y == rows - 3 && event.x >= 16 && event.x <= 21)
+                scrollHelp(3);
 
             return;
         }
