@@ -4,244 +4,129 @@
 
 # dtask
 
-A focused D task manager for the terminal. Capture a next step, give it a
-priority and due date, and keep the work that needs attention at the top.
+A keyboard- and mouse-driven task manager for the terminal, written in D.
+Organize tasks by priority and due date, search notes, and drag tasks onto a
+schedule. Data stays in a local JSON file; no account, service, or runtime
+packages are required.
 
-dtask has a dark, configurable truecolor interface, keyboard and mouse
-controls, local JSON storage, and a small CLI for scripts. It uses D's
-standard library and native POSIX facilities, with no runtime packages,
-network service, account, or background daemon.
+## Installation
 
-![dtask workspace with priorities, due dates, and drag-to-schedule targets](assets/screenshot.png)
-
-## Build and run
-
-Install [LDC](https://github.com/ldc-developers/ldc/releases) 1.43 or newer
-and GNU Make, then run:
+Requires [LDC](https://github.com/ldc-developers/ldc/releases) 1.43 or newer
+and GNU Make.
 
 ```sh
 git clone https://github.com/GuestAUser/dtask.git
 cd dtask
+./install.sh
+dtask
+```
+
+The installer builds dtask and installs it to `~/.local/bin` without sudo.
+If needed, it prints the command to add that directory to `PATH`; it does
+not modify shell profiles. Use `./install.sh --prefix PATH` to choose a
+destination or `DC=/path/to/ldc2 ./install.sh` to select a compiler.
+
+To run without installing:
+
+```sh
 make
 ./bin/dtask
 ```
 
-To choose a compiler explicitly:
+[DUB](https://dub.pm/) is also supported: `dub build --compiler=ldc2`.
 
-```sh
-make DC=/path/to/ldc2
-```
+Targets Linux (including WSL), macOS, and FreeBSD. CI runs on Linux and
+macOS. The interface requires a UTF-8 locale and an ANSI/VT-compatible
+terminal of at least **48 columns x 20 rows**; truecolor is recommended.
+Native Windows consoles are not supported.
 
-Alternatively, with [DUB](https://dub.pm/):
+## Usage
 
-```sh
-dub build --compiler=ldc2
-./bin/dtask
-```
-
-Install in your user's executable directory:
-
-```sh
-./install.sh
-# Then run from any directory:
-dtask
-```
-
-Installs to `~/.local/bin` without sudo; prints PATH setup if needed.
-Use `--prefix PATH` or `DC=/path/to/ldc2` to override the defaults.
-`make install` is also supported.
-
-The primary target is Linux, including WSL. The POSIX implementation is
-also designed for macOS and FreeBSD: terminal handling uses `termios`,
-`poll`, `ioctl`, and native character-width tables; storage uses advisory
-file locking and atomic rename. A UTF-8 locale and ANSI/VT-compatible
-terminal are required. Truecolor gives the intended palette. Native
-Windows consoles are not supported; use WSL.
-
-The workspace requires at least **48 columns by 20 rows**. At 110 columns
-and 24 rows or larger, scheduling sections appear beside the task list.
-Smaller terminals keep those same targets in a compact strip. A terminal
-below the minimum gets a resize prompt.
-
-Selection and drag targets use brief, interruptible color transitions.
-Press `m` or click **FX** to toggle motion, or start with
-`DTASK_REDUCED_MOTION=1 dtask`. Editing pauses effects; idle screens do not animate.
-
-## Fast mouse workflow
-
-Click **New**, type a title, and click **Save**. To schedule it, drag the
-task onto **Today**, **Tomorrow**, **Weekend**, or **Next week**. Release
-over **No date** to unschedule it. You can also select a task and click
-any of those targets directly.
-
-For a specific day, click **Date** or **Calendar**. Use **Prev** and
-**Next** to change months, then click the day. The calendar includes the
-same quick presets, so most dates need no typing.
-
-Click **Edit** to change a task. Choose priority with the visible buttons
-and use **Pick date** for its due date. These changes remain a draft until
-you click **Save**; **Cancel** discards them. Complete tasks with their
-checkboxes, click the search line to filter, and click **Clear** to show
-everything again. Help and Quit are also available on the toolbar.
-
-While dragging, the target highlights and the status line previews its
-date. Dropping outside a target, pressing Esc, or resizing cancels without
-changing the task. Shift-drag may select terminal text instead, depending
-on your terminal.
-
-## Reading and editing descriptions
-
-Roomy terminals show the selected task's full, wrapped title and description
-below the list. Click **Expand** or **Details** to open a dedicated reader;
-this is also available on small terminals. Paragraphs and blank lines stay
-intact. Scroll with the wheel, **Up/Down** buttons, arrow keys, or Page Up/
-Page Down. Home and End jump to the beginning and end without changing tasks.
-
-In the task editor, click **Edit description** for a multiline draft.
-Enter starts a new paragraph, and pasted text keeps its paragraph breaks.
-Click to position the cursor; arrows, Home/End, Backspace, Delete, and Ctrl-U
-work without splitting UTF-8 text. **Back** returns to the fields while
-keeping the draft. **Save** saves the task; **Cancel** or Esc discards the
-whole edit. Reading or scrolling never changes stored task data.
-
-## Working with tasks
+Press `?` for the full shortcut reference. Help supports arrow keys,
+Page Up/Down, Home/End, and mouse scrolling.
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, arrow keys | Move selection |
-| Home / End, `g` / `G` | First / last task |
-| Page Up / Page Down | Move by one page |
+| `j` / `k`, arrows | Select a task |
 | `n` | New task |
-| `e`, Enter | Edit the selected task |
-| `v` | Open the full task reader |
+| `e`, Enter | Edit selected task |
+| `v` | Read full title and notes |
 | Space | Complete or reopen |
-| `p` | Cycle low, normal, high, urgent |
-| `d` | Delete; `y` confirms and Esc cancels |
-| `/` | Search titles and notes as you type |
+| `p` | Cycle priority |
+| `d` | Delete after confirmation |
+| `/` | Search titles and notes |
 | `1` / `2` / `3` / `4` | Open / Today / All / Done |
-| Esc | Cancel a form/search, or clear the current search |
-| `r` | Reload the selected theme file |
-| `m` | Toggle motion effects |
-| `?` | Open help; arrows scroll it |
+| Esc | Cancel or clear search |
+| `m` / `r` | Toggle motion / reload theme |
 | `q`, Ctrl-C | Quit |
 
-Click a row to select it, or its checkbox to complete/reopen it. View tabs,
-the search line, action buttons, form fields, and Save/Cancel are clickable.
-The mouse wheel moves through the task list; in the calendar it changes
-the month.
+Click a task to select it or its checkbox to complete it. Drag onto
+**Today**, **Tomorrow**, **Weekend**, **Next week**, or **No date** to
+schedule; **Calendar** selects a specific day. Esc, resizing, or dropping
+outside a target cancels the drag.
 
-In the editor, Tab moves between title, priority, date, and notes.
-Ctrl-U clears a field; Backspace removes the character before the cursor.
-Enter saves from title, priority, or date; from notes it opens multiline
-editing. Inside the multiline editor, Enter inserts a newline and Tab
-returns to the fields. Use the Save button to apply the draft. Bracketed
-paste is text, never a navigation or deletion command.
+In the editor, Tab moves between fields. **Edit description** opens a
+multiline draft. **Back** keeps the draft, **Save** applies it, and
+**Cancel** discards it. Pasted text never runs shortcuts.
 
 Dates accept `YYYY-MM-DD`, `today`, `tomorrow`, `fri`, `next monday`,
-`next week`, `weekend`, `+7d`, or `in 7 days`. `next week` means the next
-Monday; weekday names always mean the next occurrence, even when today
-has that weekday. `weekend` means the nearest Saturday, including today
-when it is Saturday. Use `none`, `no date`, or an empty field to unschedule.
-Dates are local calendar days, so daylight-saving transitions do not turn
-one day into zero or two.
+`next week`, `weekend`, `+7d`, or `in 7 days`. Next week means the next
+Monday; weekend means the nearest Saturday. Use `none` to remove a date.
+The Today view includes overdue tasks.
 
-The Today view includes overdue open tasks. Smart ordering places open
-tasks before completed ones, overdue tasks before other open work, then
-sorts by descending priority, ascending due date, and stable task ID.
-Tasks without dates sort after dated tasks within the same priority.
+Motion is brief and interruptible, pauses while editing, and stops when
+idle. Set `DTASK_REDUCED_MOTION=1` to start with effects disabled.
 
 ## CLI
 
 ```sh
 dtask add "Prepare the release" --priority high --due tomorrow
-dtask add "Plan the next sprint" --due "next week"
-dtask add "Read proposal" --notes "Check the migration section"
-dtask list
+dtask add "Review proposal" --notes "Check the migration section"
 dtask list --all --json
 dtask done 1
 dtask delete 1
 ```
 
-`done` is idempotent: completing an already completed task does not reopen
-it. `delete` is immediate on the CLI, while the TUI asks for confirmation.
-Use `--data PATH` for a separate workspace and `--theme PATH` to select a
-theme explicitly. `dtask --help` lists all options.
+`done` is idempotent. CLI deletion is immediate; the interactive interface
+asks for confirmation. Use `--data PATH` for a separate workspace,
+`--theme PATH` for a theme, and `--help` for all options.
 
-## Themes
+## Configuration and storage
 
-The built-in theme is Midnight. Copy `themes/midnight.json` or
-`themes/ember.json` to:
+| File | Default location |
+| --- | --- |
+| Tasks | `~/.local/share/dtask/tasks.json` |
+| Theme | `~/.config/dtask/theme.json` |
 
-```text
-$XDG_CONFIG_HOME/dtask/theme.json
-# Default: ~/.config/dtask/theme.json
-```
+`XDG_DATA_HOME` and `XDG_CONFIG_HOME` override those base directories.
+Task changes are saved atomically. Each open store holds an exclusive lock;
+close the interface before using the CLI with the same file.
 
-You can override only the values you want:
+The default theme is Midnight. Copy [Midnight](themes/midnight.json) or
+[Ember](themes/ember.json) to the theme location, or provide partial overrides:
 
 ```json
 {
-    "name": "My midnight",
-    "accent": "#C4A7E7",
-    "selected": "#2A2440",
-    "urgent": "#EB6F92"
+  "name": "Custom",
+  "accent": "#C4A7E7",
+  "selected": "#2A2440"
 }
 ```
 
-Supported color keys are `background`, `panel`, `foreground`, `muted`,
-`accent`, `selected`, `border`, `urgent`, `high`, `normal`, `low`, and
-`success`. Colors must use `#RRGGBB`; unknown keys and malformed values
-produce a clear error. The optional `name` appears in the header.
+Colors use `#RRGGBB`. Press `r` to reload a loaded theme; invalid changes
+leave the current palette intact. Restart to discover a newly created
+default theme file.
 
-```sh
-dtask --theme themes/ember.json
-```
-
-Press `r` after editing a loaded theme. A failed reload leaves the current
-palette intact and displays the error. Restart dtask to discover a newly
-created default theme when the session began without a theme file.
-
-## Storage and recovery
-
-The default store is `$XDG_DATA_HOME/dtask/tasks.json`, falling back to
-`~/.local/share/dtask/tasks.json`. Parent directories are created as needed.
-Mutations are saved immediately; there is no separate save command.
-
-A store holds an exclusive advisory lock for its session. A second process
-using the same file fails clearly rather than silently losing changes.
-Close the TUI before using the CLI against that same store, or choose
-another `--data` path. The `.lock` file may remain after exit; the operating
-system releases the actual lock when the process closes.
-
-Writes use a private temporary file, flush it, then rename it over the
-destination. Invalid JSON, unsupported schema, malformed tasks, and
-duplicate IDs are rejected without replacing the existing file. If you
-edit the JSON manually, first close dtask and keep a backup. This is a
-single-user local store, not a multi-user synchronization format.
-
-Terminal mode, cursor, mouse tracking, and alternate screen are restored
-on normal exit, Ctrl-C, and handled termination signals. Like other
-terminal programs, dtask cannot clean up after SIGKILL, a terminal crash,
-or power loss; use `reset` if your terminal remains in an unusual mode.
-
-## Verification and development
+## Development
 
 ```sh
 make test
 ```
 
-Tests are separate from application code:
-
-- `tests/*_test.d` cover dates, sorting, storage, themes, input decoding,
-  Unicode cell widths, and error handling.
-- `tests/integration.py` drives the compiled CLI and a real pseudo-terminal,
-  including mouse sequences, resizing, persistence, and terminal cleanup.
-
-The integration script uses Python 3's standard library and event-driven
-PTY reads with bounded timeouts, not fixed sleeps. Captures are temporary
-and removed automatically. Set `DTASK_EVIDENCE_DIR=/path/outside/the/project`
-to retain ANSI frames for visual inspection. See `CONTRIBUTING.md` for module
-boundaries and code conventions.
+Tests cover the model, storage, input decoding, rendering helpers, and real
+terminal interactions. Integration tests require Python 3.10 or newer and
+use temporary stores. See [CONTRIBUTING.md](CONTRIBUTING.md) for build options
+and code conventions.
 
 ## License
 
