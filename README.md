@@ -42,10 +42,14 @@ dub build --compiler=ldc2
 Install in your user's executable directory:
 
 ```sh
-make install
-# Default destination: ~/.local/bin/dtask
-# Override with: make install PREFIX=/usr/local
+./install.sh
+# Then run from any directory:
+dtask
 ```
+
+Installs to `~/.local/bin` without sudo; prints PATH setup if needed.
+Use `--prefix PATH` or `DC=/path/to/ldc2` to override the defaults.
+`make install` is also supported.
 
 The primary target is Linux, including WSL. The POSIX implementation is
 also designed for macOS and FreeBSD: terminal handling uses `termios`,
@@ -58,6 +62,10 @@ The workspace requires at least **48 columns by 20 rows**. At 110 columns
 and 24 rows or larger, scheduling sections appear beside the task list.
 Smaller terminals keep those same targets in a compact strip. A terminal
 below the minimum gets a resize prompt.
+
+Selection and drag targets use brief, interruptible color transitions.
+Press `m` or click **FX** to toggle motion, or start with
+`DTASK_REDUCED_MOTION=1 dtask`. Editing pauses effects; idle screens do not animate.
 
 ## Fast mouse workflow
 
@@ -113,6 +121,7 @@ whole edit. Reading or scrolling never changes stored task data.
 | `1` / `2` / `3` / `4` | Open / Today / All / Done |
 | Esc | Cancel a form/search, or clear the current search |
 | `r` | Reload the selected theme file |
+| `m` | Toggle motion effects |
 | `?` | Open help; arrows scroll it |
 | `q`, Ctrl-C | Quit |
 
