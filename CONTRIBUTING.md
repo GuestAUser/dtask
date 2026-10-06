@@ -11,9 +11,9 @@ make
 make test
 ```
 
-Set `DC=/path/to/ldc2` when LDC is not on PATH. Make and DUB treat compiler
-warnings and deprecations as errors. DUB builds only the application, with no
-third-party package dependencies:
+Set `DC=/path/to/ldc2` when LDC is not on PATH. Make treats compiler warnings
+and deprecations as errors; DUB rejects deprecations. DUB builds only the
+application, with no third-party package dependencies:
 
 ```sh
 dub build --compiler=ldc2 --build=release
@@ -22,8 +22,8 @@ dub build --compiler=ldc2 --build=release
 
 Integration checks require Python 3.10 or newer and a POSIX pseudo-terminal.
 They use temporary stores and never read or alter your own task data. The
-runtime needs no Python, DUB, or third-party libraries; it uses the standard
-POSIX system libraries. Native CI runs on Linux and macOS.
+runtime needs no Python or DUB. On FreeBSD, use `gmake` instead of `make`,
+and select it for the installer with `MAKE=gmake ./install.sh`.
 
 To keep Make outputs outside the checkout, set `BIN_DIR`:
 
@@ -47,6 +47,29 @@ To retain terminal captures for debugging, set `DTASK_EVIDENCE_DIR` to a
 directory outside your checkout before running `make test`. Otherwise,
 temporary captures are automatically removed after the tests finish.
 
+## Compatibility
+
+The [build workflow](.github/workflows/build.yml) validates these configurations:
+
+| Platform | Compiler selection | Execution |
+| --- | --- | --- |
+| Linux x86_64 (`ubuntu-latest`) | LDC 1.43.0 and `ldc-latest` | Native runner |
+| macOS arm64 (`macos-latest`) | LDC 1.43.0 and `ldc-latest` | Native runner |
+| FreeBSD 14.4 x86_64 | LDC from the `pkg` latest repository, at least 1.43.0 | FreeBSD VM |
+
+Every job runs the D unit tests, CLI/storage and real-PTY integration tests,
+DUB release build, staged installation, and installer/global-command checks.
+Logs record the actual OS and compiler versions, and CI artifacts keep
+diagnostics and terminal captures on success or failure. The `ldc-latest`
+jobs follow new LDC releases as they appear. Other OS versions and
+architectures are not covered by this matrix.
+
+Editing uses Phobos grapheme boundaries and a modern narrow-ambiguous,
+grapheme-aware terminal width model: joined emoji and flags occupy two cells.
+Terminals with scalar or additive emoji widths can disagree with this model.
+Phobos's segmentation tables are not a claim of full current Unicode
+conformance; the supported compiler still separates some Indic conjuncts.
+
 ## Code conventions
 
 Use readable conditions, blank lines between logical steps, and explanatory
@@ -67,6 +90,9 @@ moving storage or terminal operations into layout code.
 
 All persisted or user-provided text must pass through display-cell fitting
 before being rendered. Never interpolate untrusted text into ANSI commands.
+Keep cursors on whole-field grapheme boundaries and use the shared text
+helpers for fitting, wrapping, and cell widths. Normalize clipboard line
+endings before applying UTF-8 byte limits; do not split a cluster to fit.
 Terminal cleanup must restore cursor, mouse tracking, and input mode on both
 normal exit and handled failure paths.
 
