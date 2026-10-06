@@ -99,10 +99,10 @@ DraftLine[] draftLines(string text, int width)
     int cells;
     char[] rendered;
 
-    foreach (boundary; 0 .. boundaries.length - 1)
+    foreach (boundary; 1 .. boundaries.length)
     {
-        const index = boundaries[boundary];
-        const end = boundaries[boundary + 1];
+        const index = boundaries[boundary - 1];
+        const end = boundaries[boundary];
         auto glyph = to!string(points[index .. end]);
         const newline = points[end - 1] == '\n';
         const tab = points[index] == '\t';
@@ -158,10 +158,10 @@ size_t draftCursorAt(string text, DraftLine line, int column)
     auto last = line.start;
     column = max(0, column);
 
-    foreach (boundary; 0 .. boundaries.length - 1)
+    foreach (boundary; 1 .. boundaries.length)
     {
-        const start = boundaries[boundary];
-        const end = boundaries[boundary + 1];
+        const start = boundaries[boundary - 1];
+        const end = boundaries[boundary];
 
         if (start < line.start)
             continue;

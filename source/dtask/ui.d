@@ -8,11 +8,12 @@ import dtask.motion;
 import dtask.visuals;
 import dtask.text : graphemeBoundaries, wrapText, textWidth;
 import core.time : MonoTime;
-import std.algorithm : min, max;
+import std.algorithm : min, max, startsWith;
+import std.array : replicate;
 import std.conv : to;
 import std.datetime : Date;
 import std.process : environment;
-import std.string : strip, replace;
+import std.string : strip, stripRight, replace;
 
 private enum Mode { browse, search, edit, descriptionEdit, reader, calendar, confirmDelete, help }
 
@@ -20,6 +21,16 @@ private static immutable tabLabels = ["1 Open", "2 Today", "3 All", "4 Done"];
 private static immutable filterValues = ["open", "today", "all", "done"];
 private static immutable fieldLabels = ["Title", "Priority", "Due date", "Notes"];
 private static immutable priorityLabels = ["low", "normal", "high", "urgent"];
+
+/*
+ * A click target registered by the frame that drew it. Drawing and hit testing
+ * share one rectangle, so a moved or renamed control can never lose its action.
+ */
+private struct Control
+{
+    CellRect area;
+    void delegate() action;
+}
 
 /**
  * Run the mouse/keyboard workspace using an open, loaded store and a validated palette.
@@ -52,7 +63,7 @@ private final class Workspace
     string filter = "open";
     string query;
     string previousQuery;
-    string status = "Drag a task to a date, or select it and click a date.";
+    string status = "Drag a task onto a date to schedule it.";
     size_t[] visible;
     int selected;
     int offset;
@@ -90,6 +101,7 @@ private final class Workspace
     string[] previousRows;
     int paintedColumns;
     int paintedHeight;
+    Control[] controls;
     ulong shimmerFocus;
     int shimmerDrop = -1;
     bool shimmerStatus;
@@ -139,12 +151,12 @@ private final class Workspace
                 continue;
             }
 
-            auto oldTask = current();
-            const oldId = oldTask is null ? 0 : oldTask.id;
+            const oldId = currentId();
             const oldMode = mode;
             const oldStatus = status;
             const oldTarget = dropTarget;
             const oldFilter = filter;
+
             try
             {
                 handle(event);
@@ -158,32 +170,32 @@ private final class Workspace
                 break;
 
             refresh();
-            auto newTask = current();
-            const newId = newTask is null ? 0 : newTask.id;
+            const newId = currentId();
+            const focusChanged = oldId != newId || oldMode != mode || oldFilter != filter;
+            const targetChanged = oldTarget != dropTarget;
+            const statusChanged = oldStatus != status;
 
             if (!motionAllowed() || !motion.enabled)
             {
                 motion.stop();
             }
-            else if (oldId != newId || oldMode != mode || oldStatus != status
-                || oldTarget != dropTarget || oldFilter != filter)
+            else if (focusChanged || targetChanged || statusChanged)
             {
-                const continuing = motion.active(visualTime);
-
-                if (!continuing)
+                /* A live sweep keeps its position and also lights the new targets. */
+                if (!motion.active(visualTime))
                 {
                     shimmerFocus = 0;
                     shimmerDrop = -1;
                     shimmerStatus = false;
                 }
 
-                if (oldId != newId || oldMode != mode || oldFilter != filter)
+                if (focusChanged)
                     shimmerFocus = newId;
 
-                if (oldTarget != dropTarget)
+                if (targetChanged)
                     shimmerDrop = dropTarget;
 
-                shimmerStatus = shimmerStatus || oldStatus != status;
+                shimmerStatus = shimmerStatus || statusChanged;
                 motion.start(visualTime);
             }
 
@@ -195,6 +207,11 @@ private final class Workspace
     {
         return mode != Mode.edit && mode != Mode.descriptionEdit
             && mode != Mode.search && mode != Mode.help;
+    }
+
+    bool browsing() const
+    {
+        return mode == Mode.browse || mode == Mode.search;
     }
 
     void refresh(ulong preferId = 0)
@@ -225,8 +242,7 @@ private final class Workspace
         else if (selected >= offset + listHeight)
             offset = selected - listHeight + 1;
 
-        auto task = current();
-        auto id = task is null ? 0 : task.id;
+        const id = currentId();
 
         if (id != descriptionId)
         {
@@ -238,6 +254,24 @@ private final class Workspace
     Task* current()
     {
         return visible.length ? &store.tasks[visible[selected]] : null;
+    }
+
+    ulong currentId()
+    {
+        auto task = current();
+        return task is null ? 0 : task.id;
+    }
+
+    /* The stored task with id, or null after it has been deleted. */
+    Task* find(ulong id)
+    {
+        foreach (ref task; store.tasks)
+        {
+            if (task.id == id)
+                return &task;
+        }
+
+        return null;
     }
 
     string ink(string color, string text, string surface = "")
@@ -256,6 +290,13 @@ private final class Workspace
         }
     }
 
+    /* Ink fitted text while the active glint sweeps its first extent cells. */
+    string shimmer(string fitted, string color, string surface, int extent)
+    {
+        return shimmerInk(fitted, color, surface, theme.accent, motion, visualTime, 0, extent);
+    }
+
+    /* Paint a whole row on the workspace background; frame diffs compare these rows. */
     void line(ref string frame, int row, string content)
     {
         auto command = "\x1b[" ~ to!string(row) ~ ";1H"
@@ -265,30 +306,66 @@ private final class Workspace
         paintedRows[row - 1] = command;
     }
 
-    void at(ref string frame, int x, int y, string text, int width, string color,
-        string surface = "", bool shimmer = false)
+    /* Append colored content at a one-based cell and record it with its row. */
+    void place(ref string frame, int x, int y, string content)
     {
-        auto fitted = fit(text, width);
-        auto command = "\x1b[" ~ to!string(y) ~ ";" ~ to!string(x) ~ "H"
-            ~ (shimmer ? shimmerInk(fitted, color, surface, theme.accent, motion, visualTime, 0, width)
-                : ink(color, fitted, surface));
+        auto command = "\x1b[" ~ to!string(y) ~ ";" ~ to!string(x) ~ "H" ~ content;
         frame ~= command;
         paintedRows[y - 1] ~= command;
     }
 
+    void at(ref string frame, int x, int y, string text, int width, string color, string surface = "")
+    {
+        place(frame, x, y, ink(color, fit(text, width), surface));
+    }
+
+    /*
+     * Draw a bracketed button and register its action, unless action is null.
+     * Labels are internal ASCII, so their byte length is their cell width.
+     * Returns the column after the button and its separating space.
+     */
+    int button(ref string frame, int x, int y, string label, void delegate() action,
+        string color = "", string surface = "")
+    {
+        const text = "[" ~ label ~ "]";
+        const width = cast(int) text.length;
+        at(frame, x, y, text, width, color.length ? color : theme.accent, surface);
+
+        if (action !is null)
+            controls ~= Control(CellRect(x, y, width, 1), action);
+
+        return x + width + 1;
+    }
+
+    /* Register a click target for content drawn by other means. */
+    void clickable(CellRect area, void delegate() action)
+    {
+        controls ~= Control(area, action);
+    }
+
+    /* Write one synchronized frame, then keep its rows for the next diff. */
+    void present(string frame)
+    {
+        terminal.write("\x1b[?2026h" ~ frame ~ "\x1b[?2026l" ~ reset);
+        previousRows = paintedRows;
+        paintedColumns = columns;
+        paintedHeight = rows;
+    }
+
     /*
      * All external text crosses fit(): terminal controls are removed and cell
-     * widths are respected. Controls use the same rectangles as hit testing.
-     * Compact layouts keep the five date targets above the bottom toolbar.
+     * widths are respected. Controls register the rectangles they draw, so a
+     * click always acts on the latest frame. Compact layouts keep the five date
+     * targets above the bottom toolbar.
      */
     void render(bool full = true)
     {
         string frame = "\x1b[?25l";
         paintedRows = new string[rows];
+        controls = null;
         caretY = 0;
-        const resized = paintedColumns != columns || paintedHeight != rows;
 
-        if (resized)
+        if (paintedColumns != columns || paintedHeight != rows)
         {
             frame ~= "\x1b[2J";
             full = true;
@@ -305,10 +382,7 @@ private final class Workspace
             if (rows >= 3)
                 line(frame, rows, "");
 
-            terminal.write("\x1b[?2026h" ~ frame ~ "\x1b[?2026l" ~ reset);
-            previousRows = paintedRows;
-            paintedColumns = columns;
-            paintedHeight = rows;
+            present(frame);
             return;
         }
 
@@ -316,134 +390,19 @@ private final class Workspace
             line(frame, row, "");
 
         if (mode == Mode.help)
-        {
             renderHelp(frame);
-            line(frame, rows, "");
-            terminal.write("\x1b[?2026h" ~ frame ~ "\x1b[?2026l" ~ reset);
-            previousRows = paintedRows;
-            paintedColumns = columns;
-            paintedHeight = rows;
-            return;
-        }
-
-        size_t openCount;
-        size_t completedCount;
-        size_t overdueCount;
-
-        foreach (task; store.tasks)
-        {
-            if (task.completed)
-                ++completedCount;
-            else
-            {
-                ++openCount;
-
-                if (task.due.length && daysUntil(task.due) < 0)
-                    ++overdueCount;
-            }
-        }
-
-        renderHeader(frame, openCount, completedCount, overdueCount);
-
-        auto task = current();
-
-        if (task !is null)
-        {
-            auto detail = "  #" ~ to!string(task.id) ~ " / " ~ priorityLabel(task.priority)
-                ~ " / " ~ (task.due.length ? task.due : "no date")
-                ~ "   " ~ to!string(selected + 1) ~ "/" ~ to!string(visible.length);
-            line(frame, 4, ink(theme.muted, fit(detail, columns - 22)));
-            at(frame, columns - 10, 4, "[Details]", 9, theme.accent);
-        }
-
-        at(frame, columns - 20, 4, motion.enabled ? "[FX:on]" : "[FX:off]", 8,
-            motion.enabled ? theme.accent : theme.muted);
-        line(frame, 5, ink(theme.muted, fit("", columns), theme.panel));
-
-        foreach (index, label; tabLabels)
-        {
-            auto active = filterValues[index] == filter;
-            at(frame, 3 + cast(int) index * 11, 5, label, 11,
-                active ? theme.foreground : theme.muted, active ? theme.selected : theme.panel);
-        }
-
-        string searchText;
-
-        if (mode == Mode.search)
-        {
-            int cursorColumn;
-            searchText = "  Search > " ~ editable(query, searchCursor, columns - 22, cursorColumn);
-            caretX = 12 + cursorColumn;
-            caretY = 6;
-        }
-        else
-            searchText = "  / Search: " ~ (query.length ? query : "all tasks");
-        line(frame, 6, ink(mode == Mode.search ? theme.accent : theme.muted, fit(searchText, columns - 10)));
-        at(frame, columns - 8, 6, "[Clear]", 7, theme.accent);
-
-        if (mode == Mode.reader)
-            renderDescription(frame, descriptionBody(columns, rows), true);
-        else if (mode == Mode.descriptionEdit)
-            renderDescriptionEditor(frame);
-        else if (mode == Mode.calendar)
-            renderCalendar(frame);
         else
         {
-            if (mode == Mode.edit)
-                renderForm(frame);
-            else
-                renderTasks(frame);
-
-            renderSchedule(frame, false);
+            renderWorkspace(frame);
+            renderStatus(frame);
         }
 
+        /* The compact calendar places its date presets on this row. */
         if (mode != Mode.calendar)
-        {
-            auto separator = "  " ~ repeat("-", columns - 4);
-            line(frame, rows - 4, ink(theme.border, fit(separator, columns)));
-        }
+            line(frame, rows - 4, ink(theme.border, fit("  " ~ replicate("─", columns - 4), columns)));
 
-        string actions;
-
-        if (mode == Mode.descriptionEdit)
-            actions = "  [Save] [Back] [Cancel]";
-        else if (mode == Mode.reader)
-            actions = "  [Edit] [Back]";
-        else if (mode == Mode.edit)
-            actions = "  [Save] [Cancel] [Pick date]";
-        else if (mode == Mode.calendar || mode == Mode.help)
-            actions = "  [Back]";
-        else if (mode == Mode.confirmDelete)
-            actions = "  [Delete] [Cancel]";
-        else
-            actions = "  [New] [Edit] [Done] [Date] [Del] [Help] [Quit]";
-
-        line(frame, rows - 3, ink(mode == Mode.confirmDelete ? theme.urgent : theme.accent,
-            fit(actions, columns)));
-
-        if (mode == Mode.browse || mode == Mode.search)
-        {
-            at(frame, 3, rows - 3, "[New]", 5, theme.background, theme.accent);
-            at(frame, 16, rows - 3, "[Done]", 6, theme.success);
-            at(frame, 30, rows - 3, "[Del]", 5, theme.urgent);
-        }
-
-        auto statusColor = status.length >= 6 && status[0 .. 6] == "Error:" ? theme.urgent : theme.muted;
-        auto statusText = fit("  " ~ status, columns);
-        line(frame, rows - 2, shimmerStatus
-            ? shimmerInk(statusText, statusColor, theme.background, theme.accent,
-                motion, visualTime, 0, columns)
-            : ink(statusColor, statusText));
-
-        auto footer = mode == Mode.descriptionEdit ? "  Enter: newline | Tab: back | Esc: cancel"
-            : mode == Mode.reader ? "  Wheel/PgUp/PgDn/Home/End | Esc: back"
-            : mode == Mode.edit ? (field == 3 ? "  Enter: describe | Tab: field | Esc: cancel"
-                : "  Tab: field | Enter: save | Esc: cancel")
-            : mode == Mode.calendar ? "  Click a day | Esc: back, no date change"
-            : mode == Mode.help ? "  Wheel/Up/Down: scroll | Esc: back"
-            : mode == Mode.confirmDelete ? "  Delete task #" ~ to!string(deletingId) ~ "? y / Esc"
-            : "  v details | / search | m effects | q quit";
-        line(frame, rows - 1, ink(theme.muted, fit(footer, columns), theme.panel));
+        renderToolbar(frame);
+        line(frame, rows - 1, ink(theme.muted, fit(footer(), columns), theme.panel));
         line(frame, rows, "");
 
         /*
@@ -468,22 +427,190 @@ private final class Workspace
         if (caretY > 0)
             frame ~= "\x1b[" ~ to!string(caretY) ~ ";" ~ to!string(caretX) ~ "H\x1b[?25h";
 
-        terminal.write("\x1b[?2026h" ~ frame ~ "\x1b[?2026l" ~ reset);
-        previousRows = paintedRows;
-        paintedColumns = columns;
-        paintedHeight = rows;
+        present(frame);
+    }
+
+    void renderWorkspace(ref string frame)
+    {
+        size_t openCount;
+        size_t completedCount;
+        size_t overdueCount;
+
+        foreach (task; store.tasks)
+        {
+            if (task.completed)
+                ++completedCount;
+            else
+            {
+                ++openCount;
+
+                if (task.due.length && daysUntil(task.due) < 0)
+                    ++overdueCount;
+            }
+        }
+
+        renderHeader(frame, openCount, completedCount, overdueCount);
+
+        if (auto task = current())
+        {
+            auto detail = "  #" ~ to!string(task.id) ~ " / " ~ priorityLabel(task.priority)
+                ~ " / " ~ (task.due.length ? task.due : "no date")
+                ~ "   " ~ to!string(selected + 1) ~ "/" ~ to!string(visible.length);
+            line(frame, 4, ink(theme.muted, fit(detail, columns - 22)));
+
+            if (browsing)
+                button(frame, columns - 10, 4, "Details", &beginReader);
+        }
+
+        button(frame, columns - 20, 4, motion.enabled ? "FX:on" : "FX:off", () { action("m"); },
+            motion.enabled ? theme.accent : theme.muted);
+
+        line(frame, 5, ink(theme.muted, fit("", columns), theme.panel));
+
+        foreach (index, label; tabLabels)
+        {
+            const active = filterValues[index] == filter;
+            const x = 3 + cast(int) index * 11;
+            at(frame, x, 5, label, 11, active ? theme.foreground : theme.muted,
+                active ? theme.selected : theme.panel);
+
+            if (browsing)
+                clickable(CellRect(x, 5, 11, 1), showFilter(filterValues[index]));
+        }
+
+        string searchText;
+
+        if (mode == Mode.search)
+        {
+            int cursorColumn;
+            searchText = "  Search > " ~ editable(query, searchCursor, columns - 22, cursorColumn);
+            caretX = 12 + cursorColumn;
+            caretY = 6;
+        }
+        else
+            searchText = "  / Search: " ~ (query.length ? query : "all tasks");
+
+        line(frame, 6, ink(mode == Mode.search ? theme.accent : theme.muted, fit(searchText, columns - 10)));
+
+        if (browsing)
+        {
+            /* The row starts a search; its Clear button is registered on top. */
+            clickable(CellRect(1, 6, columns, 1), &beginSearch);
+            button(frame, columns - 8, 6, "Clear", &clearSearch);
+        }
+
+        if (mode == Mode.reader)
+            renderDescription(frame, descriptionBody(columns, rows), true);
+        else if (mode == Mode.descriptionEdit)
+            renderDescriptionEditor(frame);
+        else if (mode == Mode.calendar)
+            renderCalendar(frame);
+        else
+        {
+            if (mode == Mode.edit)
+                renderForm(frame);
+            else
+                renderTasks(frame);
+
+            renderSchedule(frame, false);
+        }
     }
 
     void renderHeader(ref string frame, size_t openCount, size_t completedCount, size_t overdueCount)
     {
-        line(frame, 1, ink(theme.accent, fit("  dtask_", columns - 26))
-            ~ ink(theme.muted, fit(todayISO() ~ " / " ~ theme.name, 26)));
-        auto summary = "  " ~ to!string(openCount) ~ " open   " ~ to!string(overdueCount)
-            ~ " overdue   " ~ to!string(completedCount) ~ " done";
-        line(frame, 3, ink(theme.muted, fit(summary, columns)));
+        /* Right-align the date and theme to the edge shared by the header buttons. */
+        auto context = stripRight(fit(todayISO() ~ " / " ~ theme.name, columns - 12));
+        line(frame, 1, ink(theme.accent, fit("  dtask_", columns - 2 - textWidth(context)))
+            ~ ink(theme.muted, context));
+
+        line(frame, 3, ink(theme.muted, "  " ~ to!string(openCount) ~ " open   ")
+            ~ ink(overdueCount ? theme.urgent : theme.muted, to!string(overdueCount) ~ " overdue")
+            ~ ink(theme.muted, "   " ~ to!string(completedCount) ~ " done"));
 
         if (columns >= 78)
-            at(frame, columns - 18, 3, progressMeter(completedCount, store.tasks.length, 16), 16, theme.success);
+        {
+            const filled = completedCells(completedCount, store.tasks.length, 16);
+            place(frame, columns - 17, 3, ink(theme.success, replicate("━", filled))
+                ~ ink(theme.border, replicate("─", 16 - filled)));
+        }
+    }
+
+    void renderStatus(ref string frame)
+    {
+        auto color = status.startsWith("Error:") ? theme.urgent : theme.muted;
+        auto text = fit("  " ~ status, columns);
+        line(frame, rows - 2, shimmerStatus
+            ? shimmer(text, color, theme.background, textWidth(stripRight(text)))
+            : ink(color, text));
+    }
+
+    void renderToolbar(ref string frame)
+    {
+        const y = rows - 3;
+        int x = 3;
+
+        final switch (mode)
+        {
+            case Mode.browse:
+            case Mode.search:
+                x = button(frame, x, y, "New", () { action("n"); }, theme.background, theme.accent);
+                x = button(frame, x, y, "Edit", () { action("e"); });
+                x = button(frame, x, y, "Done", () { action(" "); }, theme.success);
+                x = button(frame, x, y, "Date", &beginCalendar);
+                x = button(frame, x, y, "Del", () { action("d"); }, theme.urgent);
+                x = button(frame, x, y, "Help", () { action("?"); });
+                button(frame, x, y, "Quit", () { action("q"); });
+                break;
+            case Mode.edit:
+                x = button(frame, x, y, "Save", &saveForm);
+                x = button(frame, x, y, "Cancel", &cancelEdit);
+                button(frame, x, y, "Pick date", &pickDraftDate);
+                break;
+            case Mode.descriptionEdit:
+                x = button(frame, x, y, "Save", &saveForm);
+                x = button(frame, x, y, "Back", &keepDraft);
+                button(frame, x, y, "Cancel", &cancelEdit);
+                break;
+            case Mode.reader:
+                x = button(frame, x, y, "Edit", () { beginEdit(true); });
+                button(frame, x, y, "Back", &closeReader);
+                break;
+            case Mode.calendar:
+                button(frame, x, y, "Back", &closeCalendar);
+                break;
+            case Mode.confirmDelete:
+                x = button(frame, x, y, "Delete", &deleteConfirmed, theme.urgent);
+                button(frame, x, y, "Cancel", &cancelDelete);
+                break;
+            case Mode.help:
+                x = button(frame, x, y, "Back", &closeHelp);
+                x = button(frame, x, y, "Up", scrollAction(-3));
+                button(frame, x, y, "Down", scrollAction(3));
+                break;
+        }
+    }
+
+    string footer()
+    {
+        final switch (mode)
+        {
+            case Mode.browse:
+            case Mode.search:
+                return "  v details | / search | m effects | q quit";
+            case Mode.edit:
+                return field == 3 ? "  Enter: describe | Tab: field | Esc: cancel"
+                    : "  Tab: field | Enter: save | Esc: cancel";
+            case Mode.descriptionEdit:
+                return "  Enter: newline | Tab: back | Esc: cancel";
+            case Mode.reader:
+                return "  Wheel/PgUp/PgDn/Home/End | Esc: back";
+            case Mode.calendar:
+                return "  Click a day | Esc: back, no date change";
+            case Mode.confirmDelete:
+                return "  Delete task #" ~ to!string(deletingId) ~ "? y / Esc";
+            case Mode.help:
+                return "  Arrows: scroll | PgUp/PgDn: page | Home/End";
+        }
     }
 
     void renderTasks(ref string frame)
@@ -492,45 +619,62 @@ private final class Workspace
         at(frame, listWidth - 21, 7, "PRIORITY", 9, theme.muted);
         at(frame, listWidth - 12, 7, "DUE DATE", 12, theme.muted);
 
+        /*
+         * Columns: marker, checkbox, title and a one-cell gap, then the nine-cell
+         * priority and twelve-cell due-date fields that mouse presses open.
+         */
         for (int row = 0; row < listHeight; ++row)
         {
-            auto index = offset + row;
+            const index = offset + row;
 
-            if (index < visible.length)
-            {
-                auto task = store.tasks[visible[index]];
-                auto surface = task.id == dragId && dragging ? theme.panel
-                    : index == selected ? theme.selected : theme.background;
-                const shimmer = index == selected && task.id == shimmerFocus && motion.active(visualTime);
+            if (index >= visible.length)
+                break;
 
-                string taskInk(string color, string text, int cell)
-                {
-                    return shimmer ? shimmerInk(text, color, surface, theme.accent,
-                        motion, visualTime, cell, listWidth - 1) : ink(color, text, surface);
-                }
+            auto task = store.tasks[visible[index]];
+            const chosen = index == selected;
+            auto surface = task.id == dragId && dragging ? theme.panel
+                : chosen ? theme.selected : theme.background;
+            auto color = task.completed ? theme.muted : theme.foreground;
+            auto dueColor = task.due.length && daysUntil(task.due) < 0 && !task.completed
+                ? theme.urgent : theme.muted;
+            auto title = elide(task.title, listWidth - 29) ~ " ";
 
-                auto color = task.completed ? theme.muted : theme.foreground;
-                auto dueColor = task.due.length && daysUntil(task.due) < 0 && !task.completed
-                    ? theme.urgent : theme.muted;
-                auto marker = index == selected ? "> " : "  ";
-                auto content = taskInk(mode == Mode.confirmDelete ? theme.urgent : theme.accent, marker, 0)
-                    ~ taskInk(index == selected ? theme.accent : theme.muted, task.completed ? "[x] " : "[ ] ", 2)
-                    ~ taskInk(color, fit(task.title, listWidth - 28), 6)
-                    ~ taskInk(priorityColor(task.priority), fit(" " ~ priorityLabel(task.priority), 9), listWidth - 22)
-                    ~ taskInk(dueColor, fit(task.due.length ? task.due : "no date", 12), listWidth - 13);
-                line(frame, 8 + row, content);
-            }
+            line(frame, 8 + row,
+                ink(mode == Mode.confirmDelete ? theme.urgent : theme.accent, chosen ? "> " : "  ", surface)
+                ~ ink(chosen ? theme.accent : theme.muted, task.completed ? "[x] " : "[ ] ", surface)
+                ~ (chosen && task.id == shimmerFocus
+                    ? shimmer(title, color, surface, textWidth(stripRight(title)))
+                    : ink(color, title, surface))
+                ~ ink(priorityColor(task.priority), fit(priorityLabel(task.priority), 9), surface)
+                ~ ink(dueColor, fit(task.due.length ? task.due : "no date", 12), surface));
         }
 
         if (visible.length == 0)
         {
-            auto row = 8 + min(1, max(0, listHeight - 2));
-            at(frame, 3, row, query.length ? "No matching tasks." : "A clear runway. Make your next move.",
-                listWidth - 4, theme.foreground);
+            string headline = "A clear runway. Make your next move.";
+            string hint = "Click New or press n to capture a task.";
+
+            if (query.length)
+            {
+                headline = "No matching tasks.";
+                hint = "Clear the search or try another view.";
+            }
+            else if (filter == "done")
+            {
+                headline = "Nothing completed yet.";
+                hint = "Completed tasks appear here.";
+            }
+            else if (filter == "today")
+            {
+                headline = "Nothing due today.";
+                hint = "Overdue and due-today tasks appear here.";
+            }
+
+            const row = 8 + min(1, max(0, listHeight - 2));
+            at(frame, 3, row, headline, listWidth - 4, theme.foreground);
 
             if (row + 1 < 8 + listHeight)
-                at(frame, 3, row + 1, query.length ? "Clear the search or try another view."
-                    : "Click New or press n to capture a task.", listWidth - 4, theme.muted);
+                at(frame, 3, row + 1, hint, listWidth - 4, theme.muted);
         }
 
         auto panel = previewBody();
@@ -571,11 +715,12 @@ private final class Workspace
         auto position = to!string(descriptionOffset + 1) ~ "-"
             ~ to!string(min(cast(int) lines.length, descriptionOffset + body.height))
             ~ "/" ~ to!string(lines.length);
+        const interactive = expanded || browsing;
 
         at(frame, body.x, body.y - 1, expanded ? "TASK DETAILS" : "SELECTED TASK", body.width, theme.accent);
 
         if (!expanded)
-            at(frame, body.x + body.width - 9, body.y - 1, "[Expand]", 8, theme.accent);
+            button(frame, body.x + body.width - 9, body.y - 1, "Expand", interactive ? &beginReader : null);
 
         foreach (row; 0 .. body.height)
         {
@@ -586,10 +731,10 @@ private final class Workspace
         }
 
         /* Inline controls share the heading; full reader controls have their own row. */
-        auto controlRow = expanded ? rows - 5 : body.y - 1;
-        auto controlX = expanded ? 3 : body.x + 15;
-        at(frame, controlX, controlRow, "[Up] [Down] " ~ position,
-            expanded ? body.width : body.width - 25, theme.accent);
+        const y = expanded ? rows - 5 : body.y - 1;
+        auto x = button(frame, expanded ? 3 : body.x + 15, y, "Up", interactive ? scrollAction(-3) : null);
+        x = button(frame, x, y, "Down", interactive ? scrollAction(3) : null);
+        at(frame, x, y, position, expanded ? body.width - 12 : body.width - 37, theme.muted);
     }
 
     void beginReader()
@@ -602,12 +747,23 @@ private final class Workspace
         status = "Read only. Edit opens a separate draft.";
     }
 
+    void closeReader()
+    {
+        mode = Mode.browse;
+    }
+
     void beginDescriptionEdit()
     {
         mode = Mode.descriptionEdit;
         field = 3;
         followDraftCursor = true;
         status = "Save task | Back: draft | Cancel: discard";
+    }
+
+    void keepDraft()
+    {
+        mode = Mode.edit;
+        status = "Notes kept in the draft. Save to apply.";
     }
 
     void renderDescriptionEditor(ref string frame)
@@ -649,9 +805,18 @@ private final class Workspace
                 index == cursorRow ? theme.selected : theme.panel);
         }
 
-        at(frame, 3, rows - 5, "[Up] [Down] " ~ to!string(draftOffset + 1) ~ "-"
+        auto position = to!string(draftOffset + 1) ~ "-"
             ~ to!string(min(cast(int) lines.length, draftOffset + body.height)) ~ "/"
-            ~ to!string(lines.length), body.width, theme.accent);
+            ~ to!string(lines.length);
+        auto x = button(frame, 3, rows - 5, "Up", scrollAction(-3));
+        x = button(frame, x, rows - 5, "Down", scrollAction(3));
+        at(frame, x, rows - 5, position, body.width - 12, theme.muted);
+    }
+
+    void scrollDraft(int amount)
+    {
+        draftOffset += amount;
+        followDraftCursor = false;
     }
 
     void handleDescriptionEdit(Event event)
@@ -665,10 +830,7 @@ private final class Workspace
         if (event.key == Key.escape)
             cancelEdit();
         else if (event.key == Key.tab)
-        {
-            mode = Mode.edit;
-            status = "Description kept in draft. Save applies; Cancel discards.";
-        }
+            keepDraft();
         else if (event.key == Key.enter)
             editText(fields[3], cursors[3], Event(Key.text, "\n"), size_t.max);
         else if (event.key == Key.up || event.key == Key.down)
@@ -678,18 +840,26 @@ private final class Workspace
             cursors[3] = draftCursorAt(fields[3], lines[next], column);
         }
         else if (event.key == Key.pageUp || event.key == Key.pageDown)
-        {
-            draftOffset += event.key == Key.pageUp ? -body.height : body.height;
-            followDraftCursor = false;
-        }
+            scrollDraft(event.key == Key.pageUp ? -body.height : body.height);
         else
             editText(fields[3], cursors[3], event, size_t.max);
+    }
+
+    /* Move the draft cursor to a clicked cell, clamped to that visual row. */
+    void placeDraftCaret(int x, int y)
+    {
+        auto body = descriptionBody(columns, rows);
+        auto lines = draftLines(fields[3], body.width - 1);
+        auto row = min(cast(int) lines.length - 1, draftOffset + y - body.y);
+        cursors[3] = draftCursorAt(fields[3], lines[row], x - body.x);
+        followDraftCursor = true;
     }
 
     void renderSchedule(ref string frame, bool calendar)
     {
         auto reference = todayISO();
         const wide = !calendar && wideSchedule(columns, rows);
+        const interactive = calendar || browsing || mode == Mode.edit;
 
         if (wide)
             at(frame, columns - 31, 8, "SCHEDULE / DROP HERE", 30, theme.accent);
@@ -699,7 +869,6 @@ private final class Workspace
             auto cell = scheduleCell(columns, rows, index, calendar);
             const highlighted = dragging && dropTarget == index;
             auto surface = highlighted ? theme.selected : theme.panel;
-            const shimmer = highlighted && shimmerDrop == index;
             const label = index == 5 && calendar ? "Back" : scheduleLabels[index];
             auto color = highlighted ? theme.success : theme.accent;
             auto title = "[" ~ label ~ "]";
@@ -721,7 +890,9 @@ private final class Workspace
                 title = (highlighted ? "> " : "  ") ~ label ~ "  (" ~ to!string(count) ~ ")";
             }
 
-            at(frame, cell.x, cell.y, title, cell.width, color, surface, shimmer);
+            auto fitted = fit(title, cell.width);
+            place(frame, cell.x, cell.y, highlighted && shimmerDrop == index
+                ? shimmer(fitted, color, surface, textWidth(title)) : ink(color, fitted, surface));
 
             if (wide && index < 5)
             {
@@ -731,6 +902,9 @@ private final class Workspace
                 if (cell.height == 3)
                     at(frame, cell.x, cell.y + 2, "", cell.width, theme.muted, surface);
             }
+
+            if (interactive)
+                clickable(cell, scheduleAction(index, calendar));
         }
     }
 
@@ -775,22 +949,27 @@ private final class Workspace
 
         foreach (index, label; fieldLabels)
         {
-            auto active = field == index;
+            const active = field == index;
             auto surface = active ? theme.selected : theme.panel;
-            auto row = 9 + cast(int) index;
-            at(frame, 3, row, label ~ ":", 10, active ? theme.accent : theme.muted, surface);
+            const row = 9 + cast(int) index;
+
+            /* Each field is one even bar, and a press anywhere on it focuses the field. */
+            at(frame, 3, row, label ~ ":", width - 4, active ? theme.accent : theme.muted, surface);
+            clickable(CellRect(1, row, width - 1, 1), focusField(cast(int) index));
 
             if (index == 1)
             {
-                foreach (priorityIndex, priority; priorityLabels)
+                auto x = 13;
+
+                foreach (priority; priorityLabels)
                 {
-                    auto chosen = fields[1] == priority;
-                    at(frame, 13 + cast(int) priorityIndex * 8, row, "[" ~ priority ~ "]", 8,
+                    const chosen = fields[1] == priority;
+                    x = button(frame, x, row, priority, choosePriority(priority),
                         chosen ? theme.success : theme.muted, chosen ? theme.selected : surface);
                 }
             }
             else if (index == 3)
-                at(frame, 13, row, "[Edit description]", width - 14, theme.accent, surface);
+                button(frame, 13, row, "Edit description", &beginDescriptionEdit, theme.accent, surface);
             else
             {
                 auto budget = width - (index == 2 ? 28 : 14);
@@ -807,11 +986,12 @@ private final class Workspace
                 at(frame, 13, row, text, budget, theme.foreground, surface);
 
                 if (index == 2)
-                    at(frame, width - 14, row, "[Pick date]", 12, theme.accent, surface);
+                    button(frame, width - 14, row, "Pick date", &pickDraftDate, theme.accent, surface);
             }
         }
 
-        at(frame, 3, 13, "[Save]   [Cancel]", 18, theme.accent);
+        auto x = button(frame, 3, 13, "Save", &saveForm);
+        button(frame, x, 13, "Cancel", &cancelEdit);
 
         if (listHeight > 8)
         {
@@ -824,24 +1004,22 @@ private final class Workspace
     {
         static immutable months = ["January", "February", "March", "April", "May", "June", "July", "August",
             "September", "October", "November", "December"];
-        at(frame, 3, 7, "[Prev]", 6, theme.accent);
+        static immutable weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+        button(frame, 3, 7, "Prev", () { calendarMonth = adjacentMonth(calendarMonth, -1); });
         at(frame, 10, 7, months[calendarMonth.month - 1] ~ " " ~ to!string(calendarMonth.year), 20,
             theme.foreground);
-        at(frame, 31, 7, "[Next]", 6, theme.accent);
-        at(frame, 39, 7, "[Back]", 6, theme.accent);
+        button(frame, 31, 7, "Next", () { calendarMonth = adjacentMonth(calendarMonth, 1); });
+        button(frame, 39, 7, "Back", &closeCalendar);
 
+        auto today = todayISO();
         auto selectedDue = calendarDraft ? fields[2] : "";
 
         if (!calendarDraft)
         {
-            foreach (task; store.tasks)
-            {
-                if (task.id == calendarId)
-                    selectedDue = task.due;
-            }
+            if (auto task = find(calendarId))
+                selectedDue = task.due;
         }
-
-        static immutable weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
         foreach (column, weekday; weekdays)
             at(frame, 3 + cast(int) column * 6, 8, weekday, 5, theme.muted);
@@ -856,11 +1034,11 @@ private final class Workspace
                     continue;
 
                 auto iso = calendarISO(calendarMonth, day);
-                auto chosen = selectedDue == iso;
+                auto cell = CellRect(3 + column * 6, 9 + row, 5, 1);
                 auto label = "[" ~ (day < 10 ? " " : "") ~ to!string(day) ~ "]";
-                at(frame, 3 + column * 6, 9 + row, label, 5,
-                    iso == todayISO() ? theme.success : theme.foreground,
-                    chosen ? theme.selected : theme.panel);
+                at(frame, cell.x, cell.y, label, cell.width, iso == today ? theme.success : theme.foreground,
+                    selectedDue == iso ? theme.selected : theme.panel);
+                clickable(cell, chooseDay(iso));
             }
         }
 
@@ -964,19 +1142,49 @@ private final class Workspace
             }
         }
 
-        line(frame, rows - 4, ink(theme.border, fit("  " ~ repeat("-", columns - 4), columns)));
-        line(frame, rows - 3, ink(theme.accent, "  [Back]  [Up] [Down]"));
         auto position = to!string(helpOffset + 1) ~ "-"
             ~ to!string(min(helpLength, helpOffset + height)) ~ " / " ~ to!string(helpLength);
         line(frame, rows - 2, ink(theme.muted, fit("  " ~ position ~ " lines", columns)));
-        line(frame, rows - 1, ink(theme.muted,
-            fit("  Arrows: scroll | PgUp/PgDn: page | Home/End", columns), theme.panel));
     }
 
     void scrollHelp(int amount, bool absolute = false)
     {
         helpOffset = max(0, min(max(0, helpLength - (rows - 9)),
             absolute ? amount : helpOffset + amount));
+    }
+
+    void closeHelp()
+    {
+        mode = Mode.browse;
+    }
+
+    /* One scroll step for the open view: help, the notes draft, or a description. */
+    void scroll(int amount)
+    {
+        if (mode == Mode.help)
+            scrollHelp(amount);
+        else if (mode == Mode.descriptionEdit)
+            scrollDraft(amount);
+        else
+            scrollDescription(amount);
+    }
+
+    void beginSearch()
+    {
+        if (mode == Mode.search)
+            return;
+
+        previousQuery = query;
+        searchCursor = to!dstring(query).length;
+        mode = Mode.search;
+    }
+
+    void clearSearch()
+    {
+        query = "";
+        searchCursor = 0;
+        mode = Mode.browse;
+        status = "Search cleared.";
     }
 
     void beginEdit(bool existing)
@@ -997,7 +1205,7 @@ private final class Workspace
         field = 0;
         draftOffset = 0;
         mode = Mode.edit;
-        status = "Draft only. Click Save or Cancel. Ctrl-U clears.";
+        status = "Editing a draft. Save applies; Esc cancels.";
     }
 
     void saveForm()
@@ -1032,7 +1240,7 @@ private final class Workspace
 
         calendarId = calendarDraft ? editingId : task.id;
         auto date = todayISO();
-        status = calendarDraft ? "Choose a draft date; Save in the editor to apply." : "Click a day to schedule.";
+        status = calendarDraft ? "Pick a date for the draft; Save applies it." : "Click a day to schedule.";
 
         try
         {
@@ -1054,6 +1262,12 @@ private final class Workspace
         mode = Mode.calendar;
     }
 
+    void pickDraftDate()
+    {
+        field = 2;
+        beginCalendar();
+    }
+
     void closeCalendar()
     {
         mode = calendarDraft ? Mode.edit : Mode.browse;
@@ -1062,15 +1276,11 @@ private final class Workspace
 
     void schedule(ulong id, string due)
     {
-        foreach (task; store.tasks)
+        if (auto task = find(id))
         {
-            if (task.id == id)
-            {
-                store.update(id, task.title, task.priority, due, task.notes);
-                status = "Task #" ~ to!string(id) ~ ": " ~ (due.length ? due : "No date") ~ ".";
-                refresh(id);
-                return;
-            }
+            store.update(id, task.title, task.priority, due, task.notes);
+            status = "Task #" ~ to!string(id) ~ ": " ~ (due.length ? due : "No date") ~ ".";
+            refresh(id);
         }
     }
 
@@ -1086,8 +1296,7 @@ private final class Workspace
         }
         else
         {
-            const task = current();
-            auto id = mode == Mode.calendar ? calendarId : task is null ? 0 : task.id;
+            const id = mode == Mode.calendar ? calendarId : currentId();
             mode = Mode.browse;
 
             if (id != 0)
@@ -1207,6 +1416,7 @@ private final class Workspace
         if (event.key == Key.resize)
         {
             followDraftCursor = true;
+
             if (dragId != 0)
                 status = "Drag cancelled by resize.";
 
@@ -1252,7 +1462,7 @@ private final class Workspace
         if (mode == Mode.reader)
         {
             if (event.key == Key.escape || (event.key == Key.text && event.text == "v"))
-                mode = Mode.browse;
+                closeReader();
             else if (event.key == Key.enter || (event.key == Key.text && event.text == "e"))
                 beginEdit(true);
             else if (event.key == Key.home)
@@ -1310,10 +1520,7 @@ private final class Workspace
             if (event.key == Key.text && event.text == "y")
                 deleteConfirmed();
             else if (event.key == Key.escape || event.key == Key.text)
-            {
-                mode = Mode.browse;
-                status = "Delete cancelled.";
-            }
+                cancelDelete();
 
             return;
         }
@@ -1321,7 +1528,7 @@ private final class Workspace
         if (mode == Mode.help)
         {
             if (event.key == Key.escape || (event.key == Key.text && (event.text == "?" || event.text == "q")))
-                mode = Mode.browse;
+                closeHelp();
             else if (event.key == Key.down || event.key == Key.up)
                 scrollHelp(event.key == Key.down ? 1 : -1);
             else if (event.key == Key.pageDown || event.key == Key.pageUp)
@@ -1357,7 +1564,7 @@ private final class Workspace
             case Key.pageUp: selected -= listHeight; return;
             case Key.pageDown: selected += listHeight; return;
             case Key.enter: beginEdit(true); return;
-            case Key.escape: query = ""; status = "Search cleared."; return;
+            case Key.escape: clearSearch(); return;
             case Key.text: action(event.text); return;
             default: return;
         }
@@ -1368,6 +1575,19 @@ private final class Workspace
         store.remove(deletingId);
         mode = Mode.browse;
         status = "Deleted task #" ~ to!string(deletingId) ~ ".";
+    }
+
+    void cancelDelete()
+    {
+        mode = Mode.browse;
+        status = "Delete cancelled.";
+    }
+
+    void toggleTask(ulong id)
+    {
+        store.toggle(id);
+        status = (find(id).completed ? "Completed" : "Reopened") ~ " task #" ~ to!string(id) ~ ".";
+        refresh(id);
     }
 
     void action(string key)
@@ -1388,20 +1608,11 @@ private final class Workspace
             case "2": filter = "today"; selected = 0; break;
             case "3": filter = "all"; selected = 0; break;
             case "4": filter = "done"; selected = 0; break;
-            case "/":
-                previousQuery = query;
-                searchCursor = to!dstring(query).length;
-                mode = Mode.search;
-                break;
+            case "/": beginSearch(); break;
             case "?": mode = Mode.help; helpOffset = 0; break;
             case " ":
                 if (task !is null)
-                {
-                    auto id = task.id;
-                    store.toggle(id);
-                    status = "Updated task #" ~ to!string(id) ~ ".";
-                    refresh(id);
-                }
+                    toggleTask(task.id);
                 break;
             case "p":
                 if (task !is null)
@@ -1418,7 +1629,7 @@ private final class Workspace
                 {
                     deletingId = task.id;
                     mode = Mode.confirmDelete;
-                    status = "Deletion is permanent. Click Delete or Cancel.";
+                    status = "Deletion is permanent. Press y to confirm.";
                 }
                 break;
             case "r":
@@ -1427,65 +1638,25 @@ private final class Workspace
                 break;
             case "m":
                 motion.enabled = !motion.enabled;
-                status = motion.enabled ? "Effects enabled. Editing stays still."
-                    : "Reduced motion. Effects disabled for this session.";
+                status = motion.enabled ? "Effects on. Editing stays still." : "Effects off for this session.";
                 break;
             default: break;
         }
     }
 
+    /*
+     * Presses act on the controls of the frame the user is looking at, drawn
+     * last first. The list itself is geometry: a press selects, opens a field,
+     * or starts a drag that only a release over a date target commits.
+     */
     void handleMouse(Event event)
     {
         const left = (event.button & 3) == 0 && event.button < 64;
 
-        if (mode != Mode.help && left && !event.release && !event.motion && event.y == 4
-            && event.x >= columns - 20 && event.x < columns - 12)
+        if (dragId != 0 && left && (event.motion || event.release))
         {
-            clearDrag();
-            action("m");
+            continueDrag(event);
             return;
-        }
-
-        if (dragId != 0 && left)
-        {
-            if (event.motion)
-            {
-                dragging = dragging || event.x != pressX || event.y != pressY;
-                dropTarget = scheduleHit(columns, rows, event.x, event.y);
-
-                if (dropTarget == 5)
-                    dropTarget = -1;
-
-                if (dragging)
-                {
-                    status = "Drag #" ~ to!string(dragId) ~ " -> " ~ (dropTarget < 0 ? "outside: release cancels"
-                        : scheduleLabels[dropTarget] ~ " " ~ normalizeDue(scheduleLabels[dropTarget], todayISO()));
-                }
-
-                return;
-            }
-
-            if (event.release)
-            {
-                auto id = dragId;
-                const moved = dragging;
-                const checkbox = pressX >= 3 && pressX <= 5 && event.x >= 3 && event.x <= 5
-                    && event.y == pressY;
-                auto target = scheduleHit(columns, rows, event.x, event.y);
-                clearDrag();
-
-                if (moved && target >= 0 && target < 5)
-                    schedule(id, normalizeDue(scheduleLabels[target], todayISO()));
-                else if (moved)
-                    status = "Drop cancelled. No date changed.";
-                else if (checkbox)
-                {
-                    store.toggle(id);
-                    refresh(id);
-                }
-
-                return;
-            }
         }
 
         if (event.release || event.motion)
@@ -1493,23 +1664,8 @@ private final class Workspace
 
         if (event.button == 64 || event.button == 65)
         {
-            if (dragId != 0)
-                return;
-
-            if (mode == Mode.reader || ((mode == Mode.browse || mode == Mode.search)
-                && previewBody().contains(event.x, event.y)))
-                scrollDescription(event.button == 64 ? -3 : 3);
-            else if (mode == Mode.descriptionEdit)
-            {
-                draftOffset += event.button == 64 ? -3 : 3;
-                followDraftCursor = false;
-            }
-            else if (mode == Mode.help)
-                scrollHelp(event.button == 64 ? -3 : 3);
-            else if (mode == Mode.browse || mode == Mode.search)
-                selected += event.button == 64 ? -1 : 1;
-            else if (mode == Mode.calendar)
-                calendarMonth = adjacentMonth(calendarMonth, event.button == 64 ? -1 : 1);
+            if (dragId == 0)
+                wheel(event.button == 64 ? -1 : 1, event.x, event.y);
 
             return;
         }
@@ -1517,229 +1673,152 @@ private final class Workspace
         if (!left)
             return;
 
-        if (mode == Mode.reader || mode == Mode.descriptionEdit)
-        {
-            if (event.y == rows - 3)
-            {
-                if (event.x >= 3 && event.x <= 8)
-                {
-                    if (mode == Mode.reader)
-                        beginEdit(true);
-                    else
-                        saveForm();
-                }
-                else if (event.x >= 10 && event.x <= 15)
-                {
-                    if (mode == Mode.reader)
-                        mode = Mode.browse;
-                    else
-                    {
-                        mode = Mode.edit;
-                        status = "Description kept in draft. Save applies; Cancel discards.";
-                    }
-                }
-                else if (mode == Mode.descriptionEdit && event.x >= 17 && event.x <= 24)
-                    cancelEdit();
-            }
-            else if (event.y == rows - 5 && event.x >= 3 && event.x <= 13)
-            {
-                auto amount = event.x < 8 ? -3 : 3;
+        clearDrag();
 
-                if (mode == Mode.reader)
-                    scrollDescription(amount);
-                else
-                {
-                    draftOffset += amount;
-                    followDraftCursor = false;
-                }
-            }
-            else if (mode == Mode.descriptionEdit && descriptionBody(columns, rows).contains(event.x, event.y))
-            {
-                auto body = descriptionBody(columns, rows);
-                auto lines = draftLines(fields[3], body.width - 1);
-                auto row = min(cast(int) lines.length - 1, draftOffset + event.y - body.y);
-                cursors[3] = draftCursorAt(fields[3], lines[row], event.x - body.x);
-                followDraftCursor = true;
-            }
-
-            return;
-        }
-
-        if (mode == Mode.confirmDelete)
-        {
-            if (event.y == rows - 3 && event.x >= 3 && event.x <= 10)
-                deleteConfirmed();
-            else if (event.y == rows - 3 && event.x >= 12 && event.x <= 19)
-            {
-                mode = Mode.browse;
-                status = "Delete cancelled.";
-            }
-
-            return;
-        }
-
-        if (mode == Mode.help)
-        {
-            if (event.y == rows - 3 && event.x >= 3 && event.x <= 8)
-                mode = Mode.browse;
-            else if (event.y == rows - 3 && event.x >= 11 && event.x <= 14)
-                scrollHelp(-3);
-            else if (event.y == rows - 3 && event.x >= 16 && event.x <= 21)
-                scrollHelp(3);
-
-            return;
-        }
-
-        if (mode == Mode.calendar)
-        {
-            auto preset = scheduleHit(columns, rows, event.x, event.y, true);
-
-            if (preset >= 0 && preset < 5)
-                chooseDate(normalizeDue(scheduleLabels[preset], todayISO()));
-            else if (preset == 5 || (event.y == 7 && event.x >= 39 && event.x <= 44)
-                || (event.y == rows - 3 && event.x >= 3 && event.x <= 8))
-                closeCalendar();
-            else if (event.y == 7 && event.x >= 3 && event.x <= 8)
-                calendarMonth = adjacentMonth(calendarMonth, -1);
-            else if (event.y == 7 && event.x >= 31 && event.x <= 36)
-                calendarMonth = adjacentMonth(calendarMonth, 1);
-            else if (event.y >= 9 && event.y <= 14 && event.x >= 3 && event.x < 44)
-            {
-                auto column = (event.x - 3) / 6;
-                auto day = calendarDay(calendarMonth, column, event.y - 9);
-
-                if (day != 0 && (event.x - 3) % 6 < 5)
-                    chooseDate(calendarISO(calendarMonth, day));
-            }
-
-            return;
-        }
-
-        auto target = scheduleHit(columns, rows, event.x, event.y);
-
-        if (target >= 0)
-        {
-            if (mode == Mode.search)
-                mode = Mode.browse;
-
-            if (target == 5)
-                beginCalendar();
-            else
-                chooseDate(normalizeDue(scheduleLabels[target], todayISO()));
-
-            return;
-        }
-
-        if (mode == Mode.edit)
-        {
-            if (event.y == 13 || event.y == rows - 3)
-            {
-                const footer = event.y == rows - 3;
-
-                if (event.x >= 3 && event.x <= 8)
-                    saveForm();
-                else if (event.x >= (footer ? 10 : 12) && event.x <= (footer ? 17 : 19))
-                    cancelEdit();
-                else if (footer && event.x >= 19 && event.x <= 29)
-                    beginCalendar();
-            }
-            else if (event.y >= 9 && event.y <= 12 && event.x < listWidth)
-            {
-                field = event.y - 9;
-
-                if (field == 1 && event.x >= 13 && event.x < 45)
-                {
-                    fields[1] = priorityLabels[(event.x - 13) / 8];
-                    cursors[1] = fields[1].length;
-                }
-                else if (field == 2 && event.x >= listWidth - 14)
-                    beginCalendar();
-                else if (field == 3)
-                    beginDescriptionEdit();
-            }
-
-            return;
-        }
-
-        if (event.y != 6 && mode == Mode.search)
+        if (mode == Mode.search && event.y != 6)
             mode = Mode.browse;
 
-        auto panel = previewBody();
-
-        if (event.y == 4 && event.x >= columns - 10 && event.x <= columns - 2)
-            beginReader();
-        else if (panel.height > 0 && event.y == panel.y - 1 && event.x >= panel.x && event.x < panel.x + panel.width)
+        foreach_reverse (control; controls)
         {
-            if (event.x >= panel.x + panel.width - 9)
-                beginReader();
-            else if (event.x >= panel.x + 15 && event.x < panel.x + 26)
-                scrollDescription(event.x < panel.x + 20 ? -3 : 3);
-        }
-        else if (event.y == 5 && event.x >= 3 && event.x < 47)
-        {
-            filter = filterValues[(event.x - 3) / 11];
-            selected = 0;
-        }
-        else if (event.y == 6)
-        {
-            if (event.x >= columns - 8 && event.x <= columns - 2)
+            if (control.area.contains(event.x, event.y))
             {
-                query = "";
-                searchCursor = 0;
-                mode = Mode.browse;
-                status = "Search cleared.";
+                control.action();
+                return;
             }
-            else if (mode != Mode.search)
-                action("/");
         }
-        else if (event.y >= 8 && event.y < 8 + listHeight && event.x >= 3 && event.x <= listWidth)
+
+        if (mode == Mode.descriptionEdit && descriptionBody(columns, rows).contains(event.x, event.y))
+            placeDraftCaret(event.x, event.y);
+        else if (browsing && event.y >= 8 && event.y < 8 + listHeight && event.x >= 3 && event.x <= listWidth)
+            pressTask(event.x, event.y);
+    }
+
+    void continueDrag(Event event)
+    {
+        if (event.motion)
         {
-            auto index = offset + event.y - 8;
+            dragging = dragging || event.x != pressX || event.y != pressY;
+            dropTarget = scheduleHit(columns, rows, event.x, event.y);
 
-            if (index < visible.length)
-            {
-                selected = index;
-                clearDrag();
-
-                if (event.x >= listWidth - 12 && event.x < listWidth)
-                {
-                    beginCalendar();
-                    return;
-                }
-
-                if (event.x >= listWidth - 21 && event.x < listWidth - 12)
-                {
-                    beginEdit(true);
-                    field = 1;
-                    return;
-                }
-
-                dragId = store.tasks[visible[index]].id;
-                pressX = event.x;
-                pressY = event.y;
-                dragging = false;
+            if (dropTarget == 5)
                 dropTarget = -1;
+
+            if (dragging)
+            {
+                status = "Drag #" ~ to!string(dragId) ~ " -> " ~ (dropTarget < 0 ? "outside: release cancels"
+                    : scheduleLabels[dropTarget] ~ " " ~ normalizeDue(scheduleLabels[dropTarget], todayISO()));
             }
+
+            return;
         }
-        else if (event.y == rows - 3)
+
+        auto id = dragId;
+        const moved = dragging;
+        const checkbox = pressX >= 3 && pressX <= 5 && event.x >= 3 && event.x <= 5 && event.y == pressY;
+        auto target = scheduleHit(columns, rows, event.x, event.y);
+        clearDrag();
+
+        if (moved && target >= 0 && target < 5)
+            schedule(id, normalizeDue(scheduleLabels[target], todayISO()));
+        else if (moved)
+            status = "Drop cancelled. No date changed.";
+        else if (checkbox)
+            toggleTask(id);
+    }
+
+    void wheel(int direction, int x, int y)
+    {
+        if (mode == Mode.reader || mode == Mode.help || mode == Mode.descriptionEdit
+            || (browsing && previewBody().contains(x, y)))
+            scroll(3 * direction);
+        else if (browsing)
+            selected += direction;
+        else if (mode == Mode.calendar)
+            calendarMonth = adjacentMonth(calendarMonth, direction);
+    }
+
+    /*
+     * Select the pressed task. Its due-date and priority cells open their
+     * controls; any other cell may become a drag, committed only on release.
+     */
+    void pressTask(int x, int y)
+    {
+        const index = offset + y - 8;
+
+        if (index >= visible.length)
+            return;
+
+        selected = index;
+
+        if (x >= listWidth - 12 && x < listWidth)
         {
-            if (event.x >= 3 && event.x <= 7) action("n");
-            else if (event.x >= 9 && event.x <= 14) action("e");
-            else if (event.x >= 16 && event.x <= 21) action(" ");
-            else if (event.x >= 23 && event.x <= 28) beginCalendar();
-            else if (event.x >= 30 && event.x <= 34) action("d");
-            else if (event.x >= 36 && event.x <= 41) action("?");
-            else if (event.x >= 43 && event.x <= 48) action("q");
+            beginCalendar();
+            return;
         }
+
+        if (x >= listWidth - 21 && x < listWidth - 12)
+        {
+            beginEdit(true);
+            field = 1;
+            return;
+        }
+
+        dragId = store.tasks[visible[index]].id;
+        pressX = x;
+        pressY = y;
+        dragging = false;
+        dropTarget = -1;
+    }
+
+    /* Each factory call owns its argument; loop variables are never captured. */
+    void delegate() showFilter(string value)
+    {
+        return () { filter = value; selected = 0; };
+    }
+
+    void delegate() focusField(int index)
+    {
+        return () {
+            field = index;
+
+            if (index == 3)
+                beginDescriptionEdit();
+        };
+    }
+
+    void delegate() choosePriority(string label)
+    {
+        return () {
+            field = 1;
+            fields[1] = label;
+            cursors[1] = label.length;
+        };
+    }
+
+    void delegate() chooseDay(string iso)
+    {
+        return () { chooseDate(iso); };
+    }
+
+    void delegate() scheduleAction(int index, bool calendar)
+    {
+        if (index == 5)
+            return calendar ? &closeCalendar : &beginCalendar;
+
+        return () { chooseDate(normalizeDue(scheduleLabels[index], todayISO())); };
+    }
+
+    void delegate() scrollAction(int amount)
+    {
+        return () { scroll(amount); };
     }
 }
 
-private string repeat(string value, int count)
+/* Fit text to width cells, ending clipped text with an ellipsis. */
+private string elide(string text, int width)
 {
-    string result;
+    if (textWidth(text) <= width)
+        return fit(text, width);
 
-    foreach (_; 0 .. max(0, count))
-        result ~= value;
-
-    return result;
+    return fit(stripRight(fit(text, width - 1)) ~ "\u2026", width);
 }

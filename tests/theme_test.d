@@ -63,18 +63,19 @@ unittest
 {
     auto theme = defaultTheme();
 
-    assert(theme.background == "#09141D");
-    assert(theme.panel == "#10232E");
-    assert(theme.foreground == "#E8F2EF");
-    assert(theme.muted == "#93ADBA");
-    assert(theme.accent == "#69DCCB");
-    assert(theme.selected == "#1C3B49");
-    assert(theme.border == "#345362");
-    assert(theme.urgent == "#F28B82");
-    assert(theme.high == "#E7BB78");
-    assert(theme.normal == "#86C7DE");
-    assert(theme.low == "#B0A0CE");
-    assert(theme.success == "#8DD6A8");
+    assert(theme.name == "Obsidian");
+    assert(theme.background == "#0A0C10");
+    assert(theme.panel == "#1A1E26");
+    assert(theme.foreground == "#F5F7FA");
+    assert(theme.muted == "#B4BCC8");
+    assert(theme.accent == "#5CBBFF");
+    assert(theme.selected == "#243A57");
+    assert(theme.border == "#6B7583");
+    assert(theme.urgent == "#FF7B7B");
+    assert(theme.high == "#FFC46A");
+    assert(theme.normal == "#E1E7EE");
+    assert(theme.low == "#B4BCC8");
+    assert(theme.success == "#5EDB94");
     assert(loadTheme("") == theme);
 
     auto directory = themeDirectory();
@@ -104,7 +105,7 @@ unittest
 /* Both shipped themes are complete JSON examples consumed by the real loader. */
 unittest
 {
-    foreach (filename; ["midnight.json", "ember.json"])
+    foreach (filename; ["obsidian.json", "midnight.json", "ember.json"])
     {
         auto path = buildPath("themes", filename);
         auto document = parseJSON(readText(path));
@@ -124,7 +125,8 @@ unittest
         }
     }
 
-    assert(loadTheme(buildPath("themes", "midnight.json")) == defaultTheme());
+    assert(loadTheme(buildPath("themes", "obsidian.json")) == defaultTheme());
+    assert(loadTheme(buildPath("themes", "midnight.json")).background != defaultTheme().background);
     assert(loadTheme(buildPath("themes", "ember.json")).background != defaultTheme().background);
 }
 

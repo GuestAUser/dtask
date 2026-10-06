@@ -43,7 +43,7 @@ make install PREFIX=/usr/local DESTDIR=/tmp/dtask-install
 root. Neither changes the executable's runtime behavior. `make clean` removes
 the selected `BIN_DIR` and the local DUB cache.
 
-To retain terminal captures for debugging, set `DTASK_EVIDENCE_DIR` to a
+To retain terminal captures for debugging, set `DTASK_CAPTURE_DIR` to a
 directory outside your checkout before running `make test`. Otherwise,
 temporary captures are automatically removed after the tests finish.
 

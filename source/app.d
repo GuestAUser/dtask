@@ -81,9 +81,12 @@ int main(string[] args)
         if (dataPath.length == 0)
             dataPath = defaultDataPath();
 
-        if (themePath.length == 0 && exists(defaultThemePath()))
+        if (themePath.length == 0)
         {
-            themePath = defaultThemePath();
+            const candidate = defaultThemePath();
+
+            if (exists(candidate))
+                themePath = candidate;
         }
 
         auto theme = loadTheme(themePath);
@@ -197,8 +200,8 @@ private void printHelp()
 
 Usage:
   dtask                              Open the interactive workspace
-  dtask add "Title" [options]         Add a task
-  dtask list [--all] [--json]         List open tasks, or all tasks
+  dtask add "Title" [options]        Add a task
+  dtask list [--all] [--json]        List open tasks, or all tasks
   dtask done ID                      Complete a task (idempotent)
   dtask delete ID                    Delete a task
 
@@ -212,20 +215,22 @@ Options:
   --version         Show version
 
 Keyboard:
-  j/k or arrows: select     n: new       e/Enter: edit
-  Space: complete/reopen    p: priority  d: delete (confirm)
-  /: search                1-4: views   ?: help
-  v: full task reader      r: theme     q: quit / Esc: cancel
+  j/k or arrows: select     n: new        e/Enter: edit
+  Space: complete/reopen    p: priority   d: delete (confirm)
+  /: search                 1-4: views    ?: help
+  v: full task reader       r: theme      m: effects
+  Esc: cancel               q: quit
 
 Mouse:
-  Click a task to select; click its checkbox to complete.
+  Click a task to select it, or its checkbox to complete it.
+  Click a due date for the calendar, or a priority to change it.
   Drag tasks to Today, Tomorrow, Weekend, Next week, or No date.
-  Click Date for a calendar; click priorities and dates while editing.
-  Click Details for wrapped descriptions; wheel and buttons scroll them.
-  Edit description opens a multiline draft; Enter adds a paragraph.
-  Save applies an edit; Cancel discards it. Wheel scrolls the list.
+  Each wheel step over the list moves the selection by one task.
+  Details opens the full description; the wheel scrolls it.
+  Edit description opens a multiline draft; Save applies the edit.
 
 Data: $XDG_DATA_HOME/dtask/tasks.json (default ~/.local/share/dtask/)
 Theme: $XDG_CONFIG_HOME/dtask/theme.json (default ~/.config/dtask/)
+Set DTASK_REDUCED_MOTION=1 to start with effects off.
 Requires an ANSI/VT-compatible POSIX terminal; 24-bit color recommended.`);
 }

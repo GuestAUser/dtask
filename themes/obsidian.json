@@ -1,0 +1,15 @@
+{
+  "name": "Obsidian",
+  "background": "#0A0C10",
+  "panel": "#1A1E26",
+  "foreground": "#F5F7FA",
+  "muted": "#B4BCC8",
+  "accent": "#5CBBFF",
+  "selected": "#243A57",
+  "border": "#6B7583",
+  "urgent": "#FF7B7B",
+  "high": "#FFC46A",
+  "normal": "#E1E7EE",
+  "low": "#B4BCC8",
+  "success": "#5EDB94"
+}

@@ -43,24 +43,28 @@ struct Theme
     string success;
 }
 
-/** Return the complete built-in Midnight palette; Theme.init is not a usable palette. */
+/**
+ * Return the complete built-in Obsidian palette; Theme.init is not a usable palette.
+ * Every text color keeps at least 6.5:1 contrast on the background and panels,
+ * and 4.5:1 on the selection, so color never carries meaning without legibility.
+ */
 Theme defaultTheme()
 {
     Theme theme;
 
-    theme.name = "Midnight";
-    theme.background = "#09141D";
-    theme.panel = "#10232E";
-    theme.foreground = "#E8F2EF";
-    theme.muted = "#93ADBA";
-    theme.accent = "#69DCCB";
-    theme.selected = "#1C3B49";
-    theme.border = "#345362";
-    theme.urgent = "#F28B82";
-    theme.high = "#E7BB78";
-    theme.normal = "#86C7DE";
-    theme.low = "#B0A0CE";
-    theme.success = "#8DD6A8";
+    theme.name = "Obsidian";
+    theme.background = "#0A0C10";
+    theme.panel = "#1A1E26";
+    theme.foreground = "#F5F7FA";
+    theme.muted = "#B4BCC8";
+    theme.accent = "#5CBBFF";
+    theme.selected = "#243A57";
+    theme.border = "#6B7583";
+    theme.urgent = "#FF7B7B";
+    theme.high = "#FFC46A";
+    theme.normal = "#E1E7EE";
+    theme.low = "#B4BCC8";
+    theme.success = "#5EDB94";
 
     return theme;
 }

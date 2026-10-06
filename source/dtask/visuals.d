@@ -8,49 +8,60 @@ import std.conv : to;
 import std.utf : codeLength;
 
 /**
- * Color a fitted, printable segment in a display-cell-positioned sheen.
- * A cluster gets one background, sampled at its center. Adjacent equal levels
- * share a color run; ASCII needs no per-cell conversions or width allocations.
- * The caller supplies the segment's offset within the complete swept surface.
+ * Draw a fitted, printable segment on a solid surface while a glint crosses it.
+ * Each cluster gets one foreground blended toward glint, sampled at its center
+ * cell. Spaces keep the current color, so padding never shows a moving smear,
+ * and adjacent equal levels share one color run. The caller passes the
+ * segment's first cell within the swept text and that text's width in cells.
  */
-string shimmerInk(string text, string color, string surface, string sheen,
+string shimmerInk(string text, string color, string surface, string glint,
     ref const Motion motion, long now, int cell, int width)
 {
+    enum levels = 16;
+    auto output = appender!string();
+    output.put(background(surface));
+
     if (!motion.active(now))
-        return background(surface) ~ foreground(color) ~ text;
+    {
+        output.put(foreground(color));
+        output.put(text);
+        return output.data;
+    }
 
     auto points = to!dstring(text);
     auto boundaries = graphemeBoundaries(points);
-    auto output = appender!string();
-    output.put(foreground(color));
-    string[17] colors;
+    string[levels + 1] inks;
     int previous = -1;
     size_t byteOffset;
     size_t runStart;
 
-    foreach (index; 0 .. boundaries.length - 1)
+    foreach (index; 1 .. boundaries.length)
     {
-        const first = boundaries[index];
-        const last = boundaries[index + 1];
+        const first = boundaries[index - 1];
+        const last = boundaries[index];
         const start = byteOffset;
 
         foreach (point; points[first .. last])
             byteOffset += codeLength!char(point);
 
-        const cells = last == first + 1 && points[first] < 0x7f
-            ? 1 : textWidth(text[start .. byteOffset]);
-        const level = cast(int) (16 * motion.strength(now, cell + cells * 0.5, width) + 0.5);
+        const ascii = last == first + 1 && points[first] < 0x7f;
+        const cells = ascii ? 1 : textWidth(text[start .. byteOffset]);
 
-        if (level != previous)
+        if (!ascii || points[first] != ' ')
         {
-            output.put(text[runStart .. start]);
+            const level = cast(int) (levels * motion.strength(now, cell + cells * 0.5, width) + 0.5);
 
-            if (!colors[level].length)
-                colors[level] = background(blend(surface, sheen, level * 0.20 / 16));
+            if (level != previous)
+            {
+                output.put(text[runStart .. start]);
 
-            output.put(colors[level]);
-            runStart = start;
-            previous = level;
+                if (!inks[level].length)
+                    inks[level] = foreground(blend(color, glint, level / cast(double) levels));
+
+                output.put(inks[level]);
+                runStart = start;
+                previous = level;
+            }
         }
 
         cell += cells;
@@ -61,60 +72,39 @@ string shimmerInk(string text, string color, string surface, string sheen,
 }
 
 /**
- * Return an exact-width contiguous ASCII completion bar: '=' filled, '.' empty.
- * Widths of at least three include square brackets; smaller bars use all cells.
- * Nonpositive widths return an empty string, zero tasks leave the bar empty,
- * and completed values above total saturate at full. Fractions round down.
+ * Return how many of width cells a completion bar fills: floor(width * done / total),
+ * where done is completed capped at total. Zero tasks or a nonpositive width
+ * fill nothing; completed values at or above total fill every cell.
  */
-string progressMeter(size_t completed, size_t total, int width)
+int completedCells(size_t completed, size_t total, int width)
 {
-    if (width <= 0)
+    if (width <= 0 || total == 0 || completed == 0)
+        return 0;
+
+    if (completed >= total)
+        return width;
+
+    /*
+     * Count floor(width * completed / total) without an overflowing product.
+     * Subtract before adding whenever the next fraction carries. The loop is
+     * bounded by the bar width, not the number of tasks.
+     */
+    int filled;
+    size_t remainder;
+    const complement = total - completed;
+
+    foreach (_; 0 .. width)
     {
-        return "";
-    }
-
-    auto cells = new char[width];
-    cells[] = '.';
-
-    const start = width >= 3 ? 1 : 0;
-    const capacity = width >= 3 ? width - 2 : width;
-    size_t filled;
-
-    if (total != 0 && completed >= total)
-    {
-        filled = capacity;
-    }
-    else if (total != 0 && completed != 0)
-    {
-        /*
-         * Count floor(capacity * completed / total) without an overflowing
-         * product. Subtract before adding whenever the next fraction carries.
-         * The loop is bounded by the output width, not the number of tasks.
-         */
-        size_t remainder;
-        const complement = total - completed;
-
-        foreach (_; 0 .. capacity)
+        if (remainder >= complement)
         {
-            if (remainder >= complement)
-            {
-                remainder -= complement;
-                ++filled;
-            }
-            else
-            {
-                remainder += completed;
-            }
+            remainder -= complement;
+            ++filled;
+        }
+        else
+        {
+            remainder += completed;
         }
     }
 
-    cells[start .. start + filled] = '=';
-
-    if (width >= 3)
-    {
-        cells[0] = '[';
-        cells[$ - 1] = ']';
-    }
-
-    return cast(string) cells;
+    return filled;
 }

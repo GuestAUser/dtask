@@ -19,7 +19,7 @@ jobs:
       run:
         shell: bash
     env:
-      DTASK_EVIDENCE_DIR: ${{ github.workspace }}/ci-evidence/terminal
+      DTASK_CAPTURE_DIR: ${{ github.workspace }}/ci-artifacts/terminal
     steps:
       - uses: actions/checkout@v4
       - uses: dlang-community/setup-dlang@v2
@@ -30,16 +30,16 @@ jobs:
           python-version: "3.12"
       - name: Record toolchain versions
         run: |
-          mkdir -p ci-evidence
+          mkdir -p ci-artifacts
           {
             uname -a
             ldc2 --version
             dub --version
             python3 --version
-          } 2>&1 | tee ci-evidence/versions.log
+          } 2>&1 | tee ci-artifacts/versions.log
       - name: Build and exercise the CLI and real terminal
         run: |
-          make test DC=ldc2 2>&1 | tee ci-evidence/tests.log
+          make test DC=ldc2 2>&1 | tee ci-artifacts/tests.log
           ./bin/dtask --version
       - name: Build with DUB
         run: |
@@ -62,8 +62,8 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: evidence-${{ matrix.os }}-${{ matrix.compiler }}
-          path: ci-evidence/
+          name: logs-${{ matrix.os }}-${{ matrix.compiler }}
+          path: ci-artifacts/
 
   freebsd:
     runs-on: ubuntu-latest
@@ -76,13 +76,13 @@ jobs:
           arch: x86_64
           sync: rsync
           copyback: true
-      # The custom shell copies evidence back even when the command fails.
+      # The custom shell copies artifacts back even when the command fails.
       - name: Verify FreeBSD toolchain, tests, DUB and installation
         shell: freebsd {0}
         run: |
           set -eu
-          mkdir -p ci-evidence
-          log="$PWD/ci-evidence/validation.log"
+          mkdir -p ci-artifacts
+          log="$PWD/ci-artifacts/validation.log"
 
           show_log() {
             status=$?
@@ -118,20 +118,20 @@ jobs:
               raise SystemExit("FreeBSD validation requires LDC >= 1.43.0")
           PY
 
-            export DTASK_EVIDENCE_DIR="$PWD/ci-evidence/terminal"
+            export DTASK_CAPTURE_DIR="$PWD/ci-artifacts/terminal"
             gmake test DC=ldc2
             ./bin/dtask --version
             dub build --compiler=ldc2 --build=release
             ./bin/dtask --version
 
-            stage="$PWD/ci-evidence/staged install"
+            stage="$PWD/ci-artifacts/staged install"
             gmake install DC=ldc2 PREFIX=/usr/local DESTDIR="$stage"
             "$stage/usr/local/bin/dtask" --version
 
             sh -n install.sh
             workspace=$PWD
-            mkdir -p ci-evidence/installer-cwd
-            cd ci-evidence/installer-cwd
+            mkdir -p ci-artifacts/installer-cwd
+            cd ci-artifacts/installer-cwd
             prefix="$PWD/dtask user install"
             MAKE=gmake DC=ldc2 "$workspace/install.sh" --prefix "$prefix"
             export PATH="$prefix/bin:$PATH"
@@ -142,5 +142,5 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: evidence-freebsd-14.4-x86_64
-          path: ci-evidence/
+          name: logs-freebsd-14.4-x86_64
+          path: ci-artifacts/

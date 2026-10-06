@@ -251,11 +251,11 @@ def cli_option_checks(binary: str, root: Path) -> None:
     assert json.loads(result.stdout) == tasks
     print("PASS: literal option values, independent help/version and explicit paths without HOME")
 
-def tui_checks(binary: str, root: Path, evidence: Path) -> None:
+def tui_checks(binary: str, root: Path, captures: Path) -> None:
     data = root / "tui.json"
 
     with terminal(binary, data) as session:
-        evidence.joinpath("empty.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("empty.ansi").write_bytes(session.frames[-1])
         session.send("n")
         session.type_text("Plan release")
         session.send("\t")
@@ -265,9 +265,9 @@ def tui_checks(binary: str, root: Path, evidence: Path) -> None:
         session.type_text("2030-12-31")
         session.send("\t")
         session.type_text("Read the rollout checklist")
-        evidence.joinpath("form.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("form.ansi").write_bytes(session.frames[-1])
         session.click("[Save]")
-        evidence.joinpath("workspace.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("workspace.ansi").write_bytes(session.frames[-1])
         command(binary, data, "add", "Concurrent writer", success=False)
 
         session.send("e")
@@ -277,24 +277,24 @@ def tui_checks(binary: str, root: Path, evidence: Path) -> None:
         session.send("p")
         session.send("/")
         session.type_text("revised")
-        evidence.joinpath("search.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("search.ansi").write_bytes(session.frames[-1])
         session.send("\r")
         session.send("\x1b")
         session.send("?")
-        evidence.joinpath("help.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("help.ansi").write_bytes(session.frames[-1])
         session.send("\x1b")
         session.click("[ ]")
         session.send("4")
-        evidence.joinpath("done.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("done.ansi").write_bytes(session.frames[-1])
         session.send(" ")  # Reopen through the keyboard.
         session.send("1")
         session.send("d")
-        evidence.joinpath("delete.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("delete.ansi").write_bytes(session.frames[-1])
         session.send("\x1b")  # Cancellation preserves the task.
         session.resize(60, 24)
         os.kill(session.process.pid, signal.SIGWINCH)
         session.frame()
-        evidence.joinpath("compact.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("compact.ansi").write_bytes(session.frames[-1])
         session.finish()
 
     tasks = json.loads(command(binary, data, "list", "--all", "--json").stdout)
@@ -318,7 +318,7 @@ def tui_checks(binary: str, root: Path, evidence: Path) -> None:
 
     print("PASS: real PTY create/edit/priority/search/mouse/complete/reopen/delete/resize/cleanup")
 
-def mouse_checks(binary: str, root: Path, evidence: Path) -> None:
+def mouse_checks(binary: str, root: Path, captures: Path) -> None:
     data = root / "mouse.json"
 
     with terminal(binary, data, 80, 24) as session:
@@ -346,34 +346,34 @@ def mouse_checks(binary: str, root: Path, evidence: Path) -> None:
         session.send("n")
         session.send("\x1b[200~中文\ncafe\u0301 \x1b[31mred\x1b[0m\x1b[201~")
         session.send("\r")
-        evidence.joinpath("unicode-minimum.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("unicode-minimum.ansi").write_bytes(session.frames[-1])
         session.resize(40, 12)
         os.kill(session.process.pid, signal.SIGWINCH)
         session.frame()
-        evidence.joinpath("too-small.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("too-small.ansi").write_bytes(session.frames[-1])
         session.finish()
     tasks = json.loads(command(binary, data, "list", "--json").stdout)
     assert tasks[0]["title"] == "中文 cafe\u0301 red"
     print("PASS: mouse actions/forms/confirmation, Unicode paste and minimum viewport")
 
-def theme_checks(binary: str, root: Path, evidence: Path) -> None:
+def theme_checks(binary: str, root: Path, captures: Path) -> None:
     data = root / "theme-data.json"
     theme = root / "theme.json"
     theme.write_text('{"background":"#202122","accent":"#C4A7E7"}', encoding="utf-8")
 
     with terminal(binary, data, theme=theme) as session:
         assert b"\x1b[48;2;32;33;34m" in session.frames[-1]
-        evidence.joinpath("custom-theme.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("custom-theme.ansi").write_bytes(session.frames[-1])
         theme.write_text('{"background":"#302122","accent":"#C4A7E7"}', encoding="utf-8")
         assert b"\x1b[48;2;48;33;34m" in session.send("r")
         theme.write_text('{"background":"broken"}', encoding="utf-8")
         assert b"\x1b[48;2;48;33;34m" in session.send("r")
-        evidence.joinpath("theme-error.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("theme-error.ansi").write_bytes(session.frames[-1])
         session.finish()
     command(binary, data, "--theme", str(theme), "list", success=False)
     print("PASS: custom theme, live reload and invalid reload preserve the active palette")
 
-def navigation_checks(binary: str, root: Path, evidence: Path) -> None:
+def navigation_checks(binary: str, root: Path, captures: Path) -> None:
     data = root / "navigation.json"
     for index in range(20):
         command(binary, data, "add", f"Task {index + 1:02}")
@@ -386,7 +386,7 @@ def navigation_checks(binary: str, root: Path, evidence: Path) -> None:
         session.send(" ")
         session.send("/")
         session.type_text("no such task")
-        evidence.joinpath("no-results.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("no-results.ansi").write_bytes(session.frames[-1])
         session.send("\r")
         session.send("\x1b")
         session.send("n")
@@ -395,9 +395,9 @@ def navigation_checks(binary: str, root: Path, evidence: Path) -> None:
         session.send("\t")
         session.type_text("2030-02-30")
         session.send("\r")
-        evidence.joinpath("form-error.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("form-error.ansi").write_bytes(session.frames[-1])
         session.send("\x1b")
-        evidence.joinpath("scrolling.ansi").write_bytes(session.frames[-1])
+        captures.joinpath("scrolling.ansi").write_bytes(session.frames[-1])
         session.finish("\x03")
 
     tasks = json.loads(command(binary, data, "list", "--all", "--json").stdout)
@@ -405,7 +405,7 @@ def navigation_checks(binary: str, root: Path, evidence: Path) -> None:
     assert sorted(task["id"] for task in tasks if task["completed"]) == [11, 19]
     print("PASS: page/end/wheel navigation, empty search, invalid form and Ctrl-C cleanup")
 
-def scheduling_checks(binary: str, root: Path, evidence: Path) -> None:
+def scheduling_checks(binary: str, root: Path, captures: Path) -> None:
     for columns, rows in [(120, 32), (60, 24), (48, 20)]:
         data = root / f"schedule-{columns}.json"
         command(binary, data, "add", "Drag this task", "--priority", "high")
@@ -420,7 +420,7 @@ def scheduling_checks(binary: str, root: Path, evidence: Path) -> None:
                 (reference + timedelta(days=7 - reference.weekday())).isoformat()
                 for reference in (before, after)
             }
-            evidence.joinpath(f"scheduled-{columns}.ansi").write_bytes(session.frames[-1])
+            captures.joinpath(f"scheduled-{columns}.ansi").write_bytes(session.frames[-1])
 
             before = date.today()
             session.click("Tomorrow")
@@ -443,7 +443,7 @@ def scheduling_checks(binary: str, root: Path, evidence: Path) -> None:
             session.send(f"\x1b[<0;{x};{y}M")
             target_x, target_y = session.cell("Next week")
             session.send(f"\x1b[<32;{target_x};{target_y}M")
-            evidence.joinpath(f"dragging-{columns}.ansi").write_bytes(session.frames[-1])
+            captures.joinpath(f"dragging-{columns}.ansi").write_bytes(session.frames[-1])
             session.send("\x1b")
             session.send(f"\x1b[<0;{target_x};{target_y}m")
             assert json.loads(data.read_text(encoding="utf-8"))["tasks"][0]["due"] == ""
@@ -469,7 +469,7 @@ def selected_id(frame: bytes) -> int:
     assert match, "No selected stable task ID in the detail row"
     return int(match[1])
 
-def direct_field_checks(binary: str, root: Path, evidence: Path) -> None:
+def direct_field_checks(binary: str, root: Path, captures: Path) -> None:
     for columns, rows in [(48, 20), (120, 32)]:
         data = root / f"direct-fields-{columns}.json"
         command(binary, data, "add", "First task", "--priority", "high", "--due", "2023-01-01")
@@ -516,7 +516,7 @@ def direct_field_checks(binary: str, root: Path, evidence: Path) -> None:
             x = list_width - 12
             session.send(f"\x1b[<0;{x};{y}M")
             session.send(f"\x1b[<0;{x};{y}m")
-            evidence.joinpath(f"direct-calendar-{columns}.ansi").write_bytes(session.frames[-1])
+            captures.joinpath(f"direct-calendar-{columns}.ansi").write_bytes(session.frames[-1])
             session.click("[31]")
             stored = {task["id"]: task for task in json.loads(data.read_text())["tasks"]}
             before = {task["id"]: task for task in json.loads(original)["tasks"]}
@@ -531,7 +531,7 @@ def direct_field_checks(binary: str, root: Path, evidence: Path) -> None:
             session.send(f"\x1b[<0;{x};{y}m")
             session.send("\x15")
             session.send("\x1b[200~urgent\x1b[201~")
-            evidence.joinpath(f"direct-priority-{columns}.ansi").write_bytes(session.frames[-1])
+            captures.joinpath(f"direct-priority-{columns}.ansi").write_bytes(session.frames[-1])
             frame = session.click("[Save]")
             assert selected_id(frame) == 2
             assert session.cell("Target task", min_row=8)[1] == 8
@@ -549,12 +549,12 @@ def direct_field_checks(binary: str, root: Path, evidence: Path) -> None:
                 session.send("\x1b")
                 assert data.read_bytes() == saved
 
-            evidence.joinpath(f"direct-sorted-{columns}.ansi").write_bytes(session.frames[-1])
+            captures.joinpath(f"direct-sorted-{columns}.ansi").write_bytes(session.frames[-1])
             session.finish()
 
     print("PASS: exact direct-field intervals, nonselected IDs, release safety, Priority focus, Save/re-sort and Cancel")
 
-def wheel_precision_checks(binary: str, root: Path, evidence: Path) -> None:
+def wheel_precision_checks(binary: str, root: Path, captures: Path) -> None:
     for columns, rows in [(48, 20), (120, 32)]:
         data = root / f"wheel-precision-{columns}.json"
         for index in range(20):
@@ -580,23 +580,23 @@ def wheel_precision_checks(binary: str, root: Path, evidence: Path) -> None:
             session.send("\x1b[<32;1;1M")
             assert selected_id(session.send(down)) == 1
             session.send("\x1b[<0;1;1m")
-            evidence.joinpath(f"wheel-precision-{columns}.ansi").write_bytes(b"".join(session.frames))
+            captures.joinpath(f"wheel-precision-{columns}.ansi").write_bytes(b"".join(session.frames))
             session.finish()
 
         assert data.read_bytes() == original
 
     print("PASS: one task per wheel event, undelayed bursts, both clamps and drag suppression")
 
-def calendar_checks(binary: str, root: Path, evidence: Path) -> None:
+def calendar_checks(binary: str, root: Path, captures: Path) -> None:
     for columns, rows in [(120, 32), (48, 20)]:
         data = root / f"calendar-{columns}.json"
         command(binary, data, "add", "Calendar task", "--due", "2024-12-15")
 
         with terminal(binary, data, columns, rows) as session:
             session.click("[Date]")
-            evidence.joinpath(f"calendar-december-{columns}.ansi").write_bytes(session.frames[-1])
+            captures.joinpath(f"calendar-december-{columns}.ansi").write_bytes(session.frames[-1])
             session.click("[Next]")
-            evidence.joinpath(f"calendar-january-{columns}.ansi").write_bytes(session.frames[-1])
+            captures.joinpath(f"calendar-january-{columns}.ansi").write_bytes(session.frames[-1])
             session.click("[ 1]")
             assert json.loads(data.read_text(encoding="utf-8"))["tasks"][0]["due"] == "2025-01-01"
 
@@ -614,7 +614,7 @@ def calendar_checks(binary: str, root: Path, evidence: Path) -> None:
             session.click("[Prev]")
             session.click("[31]")
             session.click("[urgent]")
-            evidence.joinpath(f"mouse-edited-{columns}.ansi").write_bytes(session.frames[-1])
+            captures.joinpath(f"mouse-edited-{columns}.ansi").write_bytes(session.frames[-1])
             session.click("[Save]")
             stored = json.loads(data.read_text(encoding="utf-8"))["tasks"][0]
             assert stored["due"] == "2024-12-31" and stored["priority"] == 4
@@ -629,7 +629,7 @@ def calendar_checks(binary: str, root: Path, evidence: Path) -> None:
 
     print("PASS: clickable calendar, year boundary, priority selection and draft cancellation")
 
-def description_checks(binary: str, root: Path, evidence: Path) -> None:
+def description_checks(binary: str, root: Path, captures: Path) -> None:
     title = "Review a long task title with all of its context preserved for readability"
     notes = "Opening paragraph with enough context to read comfortably.\n\n"
     notes += "\n\n".join(
@@ -653,13 +653,13 @@ def description_checks(binary: str, root: Path, evidence: Path) -> None:
                 for _ in range(12):
                     session.send(f"\x1b[<64;{preview_x};{preview_y}M")
                 session.cell("Opening paragraph")
-            evidence.joinpath(f"description-preview-{columns}.ansi").write_bytes(session.frames[-1])
+            captures.joinpath(f"description-preview-{columns}.ansi").write_bytes(session.frames[-1])
             session.send("\x1b[200~q\x1b[201~")
             session.click("[Details]")
-            evidence.joinpath(f"description-reader-{columns}.ansi").write_bytes(session.frames[-1])
+            captures.joinpath(f"description-reader-{columns}.ansi").write_bytes(session.frames[-1])
             session.send("\x1b[F")
             session.cell("END_DESCRIPTION_SENTINEL")
-            evidence.joinpath(f"description-last-{columns}.ansi").write_bytes(session.frames[-1])
+            captures.joinpath(f"description-last-{columns}.ansi").write_bytes(session.frames[-1])
             session.send("\x1b[H")
             for _ in range(40):
                 session.send("\x1b[<65;6;10M")
@@ -704,7 +704,7 @@ def description_checks(binary: str, root: Path, evidence: Path) -> None:
             session.send("\x1b[200~First pasted paragraph\r\n\r\nLast pasted paragraph\titem\x1b[201~")
             session.send("\r")
             session.type_text("中文 cafe\u0301 END_EDITED_SENTINEL")
-            evidence.joinpath(f"description-editor-{columns}.ansi").write_bytes(session.frames[-1])
+            captures.joinpath(f"description-editor-{columns}.ansi").write_bytes(session.frames[-1])
             assert data.read_bytes() == original
             session.click("[Save]")
             expected = "First pasted paragraph\n\nLast pasted paragraph\titem\n中文 cafe\u0301 END_EDITED_SENTINEL"
@@ -742,7 +742,7 @@ def cursor_boundary_checks(binary: str, root: Path) -> None:
 
     print("PASS: vertical cursor movement stays on the requested soft-wrapped row")
 
-def caret_rendering_checks(binary: str, root: Path, evidence: Path) -> None:
+def caret_rendering_checks(binary: str, root: Path, captures: Path) -> None:
     data = root / "caret-rendering.json"
     title = "Alpha中文Beta"
 
@@ -753,7 +753,7 @@ def caret_rendering_checks(binary: str, root: Path, evidence: Path) -> None:
             frame = session.send("\x1b[D")
         assert session.cell(title) == (13, 9)
         assert b"\x1b[9;22H\x1b[?25h" in frame
-        evidence.joinpath("caret-title.ansi").write_bytes(frame)
+        captures.joinpath("caret-title.ansi").write_bytes(frame)
 
         session.click("[Edit description]")
         session.send("\x1b[200~regression baselines\x1b[201~")
@@ -761,7 +761,7 @@ def caret_rendering_checks(binary: str, root: Path, evidence: Path) -> None:
         frame = session.send("\x1b[<0;14;8m")
         assert session.cell("regression baselines") == (3, 8)
         assert b"\x1b[8;14H\x1b[?25h" in frame
-        evidence.joinpath("caret-description.ansi").write_bytes(frame)
+        captures.joinpath("caret-description.ansi").write_bytes(frame)
         frame = session.click("[Save]")
         assert b"\x1b[?25h" not in frame
 
@@ -771,7 +771,7 @@ def caret_rendering_checks(binary: str, root: Path, evidence: Path) -> None:
             frame = session.send("\x1b[D")
         assert session.cell(title) == (12, 6)
         assert b"\x1b[6;21H\x1b[?25h" in frame
-        evidence.joinpath("caret-search.ansi").write_bytes(frame)
+        captures.joinpath("caret-search.ansi").write_bytes(frame)
         session.send("\x1b")
         session.finish()
 
@@ -779,7 +779,7 @@ def caret_rendering_checks(binary: str, root: Path, evidence: Path) -> None:
     assert task["title"] == title and task["notes"] == "regression baselines"
     print("PASS: native edit cursor preserves text cells and Unicode positioning")
 
-def grapheme_editing_checks(binary: str, root: Path, evidence: Path) -> None:
+def grapheme_editing_checks(binary: str, root: Path, captures: Path) -> None:
     clusters = [
         ("accent", "e\u0301", 1),
         ("modifier", "\U0001f44d\U0001f3fd", 2),
@@ -794,7 +794,7 @@ def grapheme_editing_checks(binary: str, root: Path, evidence: Path) -> None:
 
     for columns, rows in [(48, 20), (120, 32)]:
         for label, cluster, width in clusters:
-            # The four actions are the retained baseline's actual editing cases.
+            # Each action moves or deletes around the cluster, never inside it.
             operations = [
                 ("backspace", ["\x1b[D", "\x7f"], "AB", 1),
                 ("delete", ["\x1b[H", "\x1b[C", "\x1b[3~"], "AB", 1),
@@ -824,7 +824,7 @@ def grapheme_editing_checks(binary: str, root: Path, evidence: Path) -> None:
                         for action in actions:
                             frame = session.send(action)
                         assert f"\x1b[{y};{x + caret}H\x1b[?25h".encode() in frame, name
-                        evidence.joinpath(name + ".ansi").write_bytes(frame)
+                        captures.joinpath(name + ".ansi").write_bytes(frame)
                         assert data.read_bytes() == original
 
                         if field == "search":
@@ -842,14 +842,14 @@ def grapheme_editing_checks(binary: str, root: Path, evidence: Path) -> None:
                     assert actual == expected, (name, actual, expected)
                     if field == "search":
                         assert data.read_bytes() == original
-                    evidence.joinpath(name + ".json").write_text(json.dumps({
+                    captures.joinpath(name + ".json").write_text(json.dumps({
                         "initial": initial, "actions": actions, "expected": expected,
                         "actual": actual, "caret": [x + caret, y],
                     }, ensure_ascii=True, indent=2), encoding="utf-8")
 
         print(f"PASS: grapheme arrows/deletion, native caret and saved bytes in all three fields at {columns}x{rows}")
 
-def grapheme_merge_checks(binary: str, root: Path, evidence: Path) -> None:
+def grapheme_merge_checks(binary: str, root: Path, captures: Path) -> None:
     woman, laptop = "\U0001f469", "\U0001f4bb"
     first, second, third = "\U0001f1fa", "\U0001f1f8", "\U0001f1e8"
     cases = [
@@ -875,7 +875,7 @@ def grapheme_merge_checks(binary: str, root: Path, evidence: Path) -> None:
                     for action in actions:
                         frame = session.send(action)
                     assert f"\x1b[{y};{x + caret}H\x1b[?25h".encode() in frame, label
-                    evidence.joinpath(label + ".ansi").write_bytes(frame)
+                    captures.joinpath(label + ".ansi").write_bytes(frame)
                     if field == "search":
                         selected = re.search(rb"#(\d+) /", frame)
                         assert selected and int(selected[1]) == 1, label
@@ -892,7 +892,7 @@ def grapheme_merge_checks(binary: str, root: Path, evidence: Path) -> None:
 
     print("PASS: insertion snaps forward and deletion snaps backward after whole-field resegmentation")
 
-def grapheme_geometry_checks(binary: str, root: Path, evidence: Path) -> None:
+def grapheme_geometry_checks(binary: str, root: Path, captures: Path) -> None:
     cluster = "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466"
     for columns, rows in [(48, 20), (120, 32)]:
         for field, x, y in [("title", 13, 9), ("search", 12, 6)]:
@@ -915,7 +915,7 @@ def grapheme_geometry_checks(binary: str, root: Path, evidence: Path) -> None:
                 frame = session.send("\x1b[D")
                 assert f"\x1b[{y};{x + width - 2}H\x1b[?25h".encode() in frame
                 assert ("a" * (width - 2) + cluster).encode() in frame
-                evidence.joinpath(f"viewport-{field}-{columns}.ansi").write_bytes(frame)
+                captures.joinpath(f"viewport-{field}-{columns}.ansi").write_bytes(frame)
 
                 frame = session.send("\x1b[H")
                 run_x = 1 if field == "search" else x
@@ -952,7 +952,7 @@ def grapheme_geometry_checks(binary: str, root: Path, evidence: Path) -> None:
             session.send("\x1b[D")
             frame = session.send("X")
             assert b"\x1b[9;3H\x1b[?25h" in frame
-            evidence.joinpath(f"grapheme-wrap-{columns}.ansi").write_bytes(frame)
+            captures.joinpath(f"grapheme-wrap-{columns}.ansi").write_bytes(frame)
             assert data.read_bytes() == original
             session.click("[Save]")
             session.finish()
@@ -961,7 +961,7 @@ def grapheme_geometry_checks(binary: str, root: Path, evidence: Path) -> None:
 
     print("PASS: whole-cluster viewport edges, wrapping, vertical movement and mouse cell mapping")
 
-def normalized_limit_checks(binary: str, root: Path, evidence: Path) -> None:
+def normalized_limit_checks(binary: str, root: Path, captures: Path) -> None:
     for columns, rows in [(48, 20), (120, 32)]:
         for field, limit in [("title", 4096), ("search", 1024)]:
             cases = [
@@ -987,7 +987,7 @@ def normalized_limit_checks(binary: str, root: Path, evidence: Path) -> None:
                         assert re.findall(cursor, frame) == re.findall(cursor, before), label
                         session.send("\x7f")
                         frame = session.send("Z")
-                    evidence.joinpath(label + ".ansi").write_bytes(frame)
+                    captures.joinpath(label + ".ansi").write_bytes(frame)
                     if field == "search":
                         selected = re.search(rb"#(\d+) /", frame)
                         assert selected and int(selected[1]) == 1, label
@@ -1022,26 +1022,29 @@ def normalized_limit_checks(binary: str, root: Path, evidence: Path) -> None:
 
     print("PASS: normalized 4096/1024-byte limits, whole-event rejection and editable oversized fields")
 
-def motion_checks(binary: str, root: Path, evidence: Path) -> None:
-    """Measure a traveling band on actual emitted cells, not a global fade."""
+def motion_checks(binary: str, root: Path, captures: Path) -> None:
+    """A glint moves across glyph colors only; every surface stays still and settles."""
+    selected = (0x24, 0x3A, 0x57)
+
     def row_run(frame: bytes, row: int, column: int = 1) -> bytes:
         matches = re.findall(fr"\x1b\[{row};{column}H(.*?)(?=\x1b\[\d+;\d+H)".encode(), frame, re.S)
-        run = matches[-1] if matches else b""
-        if column == 1:
-            # line() establishes the default palette before painting content.
-            run = re.sub(rb"^\x1b\[48;2;[\d;]+m\x1b\[38;2;[\d;]+m", b"", run)
-        return run
+        return matches[-1] if matches else b""
 
-    def backgrounds(run: bytes) -> list[tuple[int, ...]]:
+    def cells(run: bytes) -> list[tuple[tuple[int, ...], tuple[int, ...], str]]:
         # The measured rows use ASCII, so each printable byte is one cell.
-        result: list[tuple[int, ...]] = []
-        color: tuple[int, ...] = ()
+        result = []
+        background: tuple[int, ...] = ()
+        foreground: tuple[int, ...] = ()
         for part in re.split(rb"(\x1b\[[0-?]*[ -/]*[@-~])", run):
-            match = re.fullmatch(rb"\x1b\[48;2;(\d+);(\d+);(\d+)m", part)
+            match = re.fullmatch(rb"\x1b\[(38|48);2;(\d+);(\d+);(\d+)m", part)
             if match:
-                color = tuple(map(int, match.groups()))
-            elif not part.startswith(b"\x1b"):
-                result.extend([color] * len(part))
+                color = tuple(map(int, match.groups()[1:]))
+                if match[1] == b"48":
+                    background = color
+                else:
+                    foreground = color
+            elif part and not part.startswith(b"\x1b"):
+                result.extend((background, foreground, chr(byte)) for byte in part)
         return result
 
     def still(session: TerminalSession, label: str) -> None:
@@ -1049,42 +1052,40 @@ def motion_checks(binary: str, root: Path, evidence: Path) -> None:
         assert not session.selector.select(timeout=0.3), label
 
     def sweep(session: TerminalSession, initial: bytes, row: int, column: int,
-              width: int, base: tuple[int, ...], label: str) -> None:
+              swept: str, label: str) -> list[tuple[tuple[int, ...], tuple[int, ...], str]]:
         ticks: list[bytes] = []
-        positions: list[float] = []
-        samples: list[dict[str, object]] = []
-        started = monotonic()
-        deadline = started + 4
-        # Ordinary ink starts background, foreground. Active shimmer starts
-        # foreground, background. Wait for the actual settled row, not time.
-        ordinary = f"\x1b[48;2;{base[0]};{base[1]};{base[2]}m\x1b[38;2;".encode()
+        deadline = monotonic() + 4
+        while session.pending or session.selector.select(timeout=0.3):
+            assert monotonic() < deadline, f"{label}: glint did not settle"
+            ticks.append(session.frame(full=False))
 
-        while True:
-            assert monotonic() < deadline, f"{label}: sweep did not settle"
-            tick = session.frame(full=False)
-            ticks.append(tick)
-            run = row_run(tick, row, column)
-            cells = backgrounds(run)
-            if cells:
-                assert len(cells) == width, (label, len(cells), width)
-                band = [index for index, color in enumerate(cells) if color != base]
-                if band:
-                    assert len(band) < width * 0.4, f"{label}: global brightness, not a narrow band"
-                    assert band == list(range(band[0], band[-1] + 1)), label
-                    positions.append(sum(band) / len(band))
-                samples.append({"elapsed": monotonic() - started, "band": band})
-                if positions and not band and run.startswith(ordinary):
-                    break
+        runs = [run for run in (cells(row_run(frame, row, column)) for frame in [initial] + ticks) if run]
+        settled = runs[-1]
+        start = "".join(cell[2] for cell in settled).find(swept)
+        assert start >= 0, (label, swept)
+        end = start + len(swept) - 1
+        positions = []
+
+        for run in runs:
+            assert len(run) == len(settled), label
+            assert [cell[0] for cell in run] == [cell[0] for cell in settled], f"{label}: a surface moved"
+            lit = [index for index, (cell, rest) in enumerate(zip(run, settled))
+                   if cell[2] != " " and cell[1] != rest[1]]
+            if lit:
+                assert start <= lit[0] and lit[-1] <= end, f"{label}: glint left its text"
+                assert lit[-1] - lit[0] <= 10, f"{label}: glint is not a narrow band"
+                positions.append(sum(lit) / len(lit))
 
         assert len(positions) >= 5, (label, positions)
-        assert min(positions) < width * 0.25 and max(positions) > width * 0.75, (label, positions)
-        assert all(a <= b for a, b in zip(positions, positions[1:])), (label, positions)
+        assert positions == sorted(positions), (label, positions)
+        assert min(positions) < start + (end - start) * 0.25, (label, positions)
+        assert max(positions) > start + (end - start) * 0.75, (label, positions)
         assert all(len(tick) < len(initial) // 2 for tick in ticks), label
         assert all(b"\x1b[?2026h" in tick and b"\x1b[?2026l" in tick for tick in ticks), label
         assert all(b"\x1b[2J" not in tick and b"\x1b[1;1H" not in tick for tick in ticks), label
-        evidence.joinpath(label + ".ansi").write_bytes(initial + b"".join(ticks))
-        evidence.joinpath(label + ".json").write_text(json.dumps(samples, indent=2))
+        captures.joinpath(label + ".ansi").write_bytes(initial + b"".join(ticks))
         still(session, f"{label}: settled motion emitted idle output")
+        return settled
 
     for columns, rows in [(48, 20), (80, 24), (120, 32), (120, 40)]:
         data = root / f"motion-{columns}-{rows}.json"
@@ -1093,28 +1094,28 @@ def motion_checks(binary: str, root: Path, evidence: Path) -> None:
         command(binary, data, "add", " ".join(clusters), "--notes", "Keep the store unchanged")
         command(binary, data, "add", "Second focus target")
         original = data.read_bytes()
-        list_width = columns - 34 if columns >= 110 else columns
 
         with terminal(binary, data, columns, rows, reduced_motion=False) as session:
             still(session, "Startup without a transition must stay idle")
             initial = session.send("j")
             assert selected_id(initial) == 2
-            assert backgrounds(row_run(initial, 9))[0] == (28, 59, 73), "Selection was delayed"
-            sweep(session, initial, 9, 1, list_width - 1, (28, 59, 73), f"focus-{columns}-{rows}")
+            assert cells(row_run(initial, 9))[0][0] == selected, "Selection was delayed"
+            focused = sweep(session, initial, 9, 1, "Second focus target", f"focus-{columns}-{rows}")
+            assert all(cell[0] == selected for cell in focused), "Focus surface changed"
             assert data.read_bytes() == original
 
-            # A status-only transition has a moving band, not a brand/global pulse.
             initial = session.send("r")
-            sweep(session, initial, rows - 2, 1, columns, (9, 20, 29), f"status-{columns}-{rows}")
+            sweep(session, initial, rows - 2, 1, "Theme reloaded: Obsidian.", f"status-{columns}-{rows}")
 
             x, y = session.cell("Second focus target", min_row=8)
             session.send(f"\x1b[<0;{x};{y}M")
             target_x, target_y = session.cell("Tomorrow")
             initial = session.send(f"\x1b[<32;{target_x};{target_y}M")
-            target_width = 30 if columns >= 110 else (columns - 4) // 3
-            target_column = columns - 31 if columns >= 110 else target_x - 1
-            sweep(session, initial, target_y, target_column, target_width,
-                  (28, 59, 73), f"drop-{columns}-{rows}")
+            wide = columns >= 110
+            target_column = columns - 31 if wide else target_x - 1
+            label = "> Tomorrow  (0)" if wide else "[Tomorrow]"
+            target = sweep(session, initial, target_y, target_column, label, f"drop-{columns}-{rows}")
+            assert all(cell[0] == selected for cell in target), "Drop target surface changed"
             session.send("\x1b")
             session.send(f"\x1b[<0;{target_x};{target_y}m")
 
@@ -1130,7 +1131,7 @@ def motion_checks(binary: str, root: Path, evidence: Path) -> None:
                 if run:
                     for cluster in clusters:
                         assert cluster.encode() in run, "ANSI split a grapheme cluster"
-            evidence.joinpath(f"shimmer-graphemes-{columns}-{rows}.ansi").write_bytes(b"".join(unicode_frames))
+            captures.joinpath(f"shimmer-graphemes-{columns}-{rows}.ansi").write_bytes(b"".join(unicode_frames))
             assert selected_id(session.send("j")) == 2
             session.send("m")
             still(session, "Reduced motion emitted an idle frame")
@@ -1155,7 +1156,7 @@ def motion_checks(binary: str, root: Path, evidence: Path) -> None:
 
         assert data.read_bytes() == original
 
-    print("PASS: moving focus/drop/status bands, whole graphemes, immediate input, finite idle-free motion, still modes and resize")
+    print("PASS: text glints for focus/drop/status, still surfaces, whole graphemes, immediate input, finite idle-free motion, still modes and resize")
 
 def help_checks(binary: str, root: Path) -> None:
     def position(frame: bytes) -> tuple[int, int, int]:
@@ -1190,7 +1191,7 @@ def help_checks(binary: str, root: Path) -> None:
             start, end, total = position(session.frame())
             assert 1 <= start <= end <= total
             session.click("[Back]")
-            session.cell("Help regression task")
+            session.cell("Help regression")
             session.finish()
 
         assert data.read_bytes() == original
@@ -1202,26 +1203,26 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="dtask-integration-") as directory:
         root = Path(directory)
-        evidence = Path(os.environ.get("DTASK_EVIDENCE_DIR", str(root / "captures")))
-        evidence.mkdir(parents=True, exist_ok=True)
+        captures = Path(os.environ.get("DTASK_CAPTURE_DIR", str(root / "captures")))
+        captures.mkdir(parents=True, exist_ok=True)
         cli_checks(binary, root)
         cli_option_checks(binary, root)
-        tui_checks(binary, root, evidence)
-        mouse_checks(binary, root, evidence)
-        theme_checks(binary, root, evidence)
-        navigation_checks(binary, root, evidence)
-        scheduling_checks(binary, root, evidence)
-        direct_field_checks(binary, root, evidence)
-        wheel_precision_checks(binary, root, evidence)
-        calendar_checks(binary, root, evidence)
-        description_checks(binary, root, evidence)
+        tui_checks(binary, root, captures)
+        mouse_checks(binary, root, captures)
+        theme_checks(binary, root, captures)
+        navigation_checks(binary, root, captures)
+        scheduling_checks(binary, root, captures)
+        direct_field_checks(binary, root, captures)
+        wheel_precision_checks(binary, root, captures)
+        calendar_checks(binary, root, captures)
+        description_checks(binary, root, captures)
         cursor_boundary_checks(binary, root)
-        caret_rendering_checks(binary, root, evidence)
-        grapheme_editing_checks(binary, root, evidence)
-        grapheme_merge_checks(binary, root, evidence)
-        grapheme_geometry_checks(binary, root, evidence)
-        normalized_limit_checks(binary, root, evidence)
-        motion_checks(binary, root, evidence)
+        caret_rendering_checks(binary, root, captures)
+        grapheme_editing_checks(binary, root, captures)
+        grapheme_merge_checks(binary, root, captures)
+        grapheme_geometry_checks(binary, root, captures)
+        normalized_limit_checks(binary, root, captures)
+        motion_checks(binary, root, captures)
         help_checks(binary, root)
 
     print("PASS: all integration checks")
