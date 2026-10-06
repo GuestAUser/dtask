@@ -44,27 +44,27 @@ struct Theme
 }
 
 /**
- * Return the complete built-in Obsidian palette; Theme.init is not a usable palette.
- * Every text color keeps at least 6.5:1 contrast on the background and panels,
- * and 4.5:1 on the selection, so color never carries meaning without legibility.
+ * Return the complete built-in Gruvbox Hard palette; Theme.init is not a usable palette.
+ * It pairs gruvbox's hard-contrast background with its brightest foreground and
+ * accent colors, so body text keeps at least 7.5:1 contrast on the background.
  */
 Theme defaultTheme()
 {
     Theme theme;
 
-    theme.name = "Obsidian";
-    theme.background = "#0A0C10";
-    theme.panel = "#1A1E26";
-    theme.foreground = "#F5F7FA";
-    theme.muted = "#B4BCC8";
-    theme.accent = "#5CBBFF";
-    theme.selected = "#243A57";
-    theme.border = "#6B7583";
-    theme.urgent = "#FF7B7B";
-    theme.high = "#FFC46A";
-    theme.normal = "#E1E7EE";
-    theme.low = "#B4BCC8";
-    theme.success = "#5EDB94";
+    theme.name = "Gruvbox Hard";
+    theme.background = "#1D2021";
+    theme.panel = "#282828";
+    theme.foreground = "#FBF1C7";
+    theme.muted = "#BDAE93";
+    theme.accent = "#FABD2F";
+    theme.selected = "#3C3836";
+    theme.border = "#7C6F64";
+    theme.urgent = "#FB4934";
+    theme.high = "#FE8019";
+    theme.normal = "#EBDBB2";
+    theme.low = "#BDAE93";
+    theme.success = "#B8BB26";
 
     return theme;
 }

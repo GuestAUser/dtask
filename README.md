@@ -114,10 +114,11 @@ asks for confirmation. Use `--data PATH` for a separate workspace,
 Task changes are saved atomically. Each open store holds an exclusive lock;
 close the interface before using the CLI with the same file.
 
-The default theme, Obsidian, is a dark high-contrast palette: every text
-color keeps at least 6.5:1 contrast against the background. Copy
-[Obsidian](themes/obsidian.json), [Midnight](themes/midnight.json), or
-[Ember](themes/ember.json) to the theme location, or provide partial overrides:
+The default theme, Gruvbox Hard, pairs gruvbox's hard-contrast background
+with its brightest foreground and accent colors; body text keeps at least
+7.5:1 contrast. Copy [Gruvbox Hard](themes/gruvbox-hard.json),
+[Midnight](themes/midnight.json), or [Ember](themes/ember.json) to the theme
+location, or provide partial overrides:
 
 ```json
 {

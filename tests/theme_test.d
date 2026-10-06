@@ -63,19 +63,19 @@ unittest
 {
     auto theme = defaultTheme();
 
-    assert(theme.name == "Obsidian");
-    assert(theme.background == "#0A0C10");
-    assert(theme.panel == "#1A1E26");
-    assert(theme.foreground == "#F5F7FA");
-    assert(theme.muted == "#B4BCC8");
-    assert(theme.accent == "#5CBBFF");
-    assert(theme.selected == "#243A57");
-    assert(theme.border == "#6B7583");
-    assert(theme.urgent == "#FF7B7B");
-    assert(theme.high == "#FFC46A");
-    assert(theme.normal == "#E1E7EE");
-    assert(theme.low == "#B4BCC8");
-    assert(theme.success == "#5EDB94");
+    assert(theme.name == "Gruvbox Hard");
+    assert(theme.background == "#1D2021");
+    assert(theme.panel == "#282828");
+    assert(theme.foreground == "#FBF1C7");
+    assert(theme.muted == "#BDAE93");
+    assert(theme.accent == "#FABD2F");
+    assert(theme.selected == "#3C3836");
+    assert(theme.border == "#7C6F64");
+    assert(theme.urgent == "#FB4934");
+    assert(theme.high == "#FE8019");
+    assert(theme.normal == "#EBDBB2");
+    assert(theme.low == "#BDAE93");
+    assert(theme.success == "#B8BB26");
     assert(loadTheme("") == theme);
 
     auto directory = themeDirectory();
@@ -105,7 +105,7 @@ unittest
 /* Both shipped themes are complete JSON examples consumed by the real loader. */
 unittest
 {
-    foreach (filename; ["obsidian.json", "midnight.json", "ember.json"])
+    foreach (filename; ["gruvbox-hard.json", "midnight.json", "ember.json"])
     {
         auto path = buildPath("themes", filename);
         auto document = parseJSON(readText(path));
@@ -125,7 +125,7 @@ unittest
         }
     }
 
-    assert(loadTheme(buildPath("themes", "obsidian.json")) == defaultTheme());
+    assert(loadTheme(buildPath("themes", "gruvbox-hard.json")) == defaultTheme());
     assert(loadTheme(buildPath("themes", "midnight.json")).background != defaultTheme().background);
     assert(loadTheme(buildPath("themes", "ember.json")).background != defaultTheme().background);
 }

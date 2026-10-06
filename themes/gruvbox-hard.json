@@ -1,0 +1,15 @@
+{
+  "name": "Gruvbox Hard",
+  "background": "#1D2021",
+  "panel": "#282828",
+  "foreground": "#FBF1C7",
+  "muted": "#BDAE93",
+  "accent": "#FABD2F",
+  "selected": "#3C3836",
+  "border": "#7C6F64",
+  "urgent": "#FB4934",
+  "high": "#FE8019",
+  "normal": "#EBDBB2",
+  "low": "#BDAE93",
+  "success": "#B8BB26"
+}

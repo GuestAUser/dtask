@@ -1024,7 +1024,7 @@ def normalized_limit_checks(binary: str, root: Path, captures: Path) -> None:
 
 def motion_checks(binary: str, root: Path, captures: Path) -> None:
     """A glint moves across glyph colors only; every surface stays still and settles."""
-    selected = (0x24, 0x3A, 0x57)
+    selected = (0x3C, 0x38, 0x36)
 
     def row_run(frame: bytes, row: int, column: int = 1) -> bytes:
         matches = re.findall(fr"\x1b\[{row};{column}H(.*?)(?=\x1b\[\d+;\d+H)".encode(), frame, re.S)
@@ -1105,7 +1105,7 @@ def motion_checks(binary: str, root: Path, captures: Path) -> None:
             assert data.read_bytes() == original
 
             initial = session.send("r")
-            sweep(session, initial, rows - 2, 1, "Theme reloaded: Obsidian.", f"status-{columns}-{rows}")
+            sweep(session, initial, rows - 2, 1, "Theme reloaded: Gruvbox Hard.", f"status-{columns}-{rows}")
 
             x, y = session.cell("Second focus target", min_row=8)
             session.send(f"\x1b[<0;{x};{y}M")
