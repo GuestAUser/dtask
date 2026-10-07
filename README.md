@@ -2,94 +2,107 @@
   <img src="assets/wordmark.png" alt="dtask" width="480">
 </p>
 
-# dtask
+<p align="center">
+  A keyboard- and mouse-driven task manager for the terminal.
+</p>
 
-A keyboard- and mouse-driven task manager for the terminal, written in D.
-Organize tasks by priority and due date, search notes, and drag tasks onto a
-schedule. Data stays in a local JSON file; no account, service, or runtime
-packages are required.
+<p align="center">
+  <img src="assets/workspace.png" alt="The dtask workspace: a task list with priorities and due dates, a description preview, and the schedule panel" width="100%">
+</p>
+
+dtask keeps your tasks in a local JSON file and stays out of your way. Add a
+task, give it a priority and a due date, and drag it onto another day when
+plans change. It is a single native program written in D; there is no
+account, service, or runtime to install.
+
+## Features
+
+- **Keyboard and mouse.** Navigate and edit from the keyboard, or click and
+  drag: a due date opens its calendar, tasks drop onto a day, and the wheel
+  moves one task at a time.
+- **Natural dates.** Type `tomorrow`, `fri`, `next week`, or `+7d`, or pick a
+  day from the calendar.
+- **Notes.** Descriptions open in a scrollable reader and a multiline editor,
+  and drafts are saved only when you choose.
+- **Search and views.** Search titles and notes, and switch between the Open,
+  Today, All, and Done views.
+- **Themes.** A high-contrast Gruvbox theme by default, custom palettes in
+  JSON, and live reload.
+- **Safe storage.** Atomic saves, a single-writer lock, and editing that keeps
+  accents, emoji, and CJK text intact.
+
+<p align="center">
+  <img src="assets/editor.png" alt="Editing a task's title, priority, and due date" width="49%">
+  <img src="assets/calendar.png" alt="Choosing a due date in the calendar" width="49%">
+</p>
 
 ## Installation
 
-Requires [LDC](https://github.com/ldc-developers/ldc/releases) 1.43.0 or newer
-and GNU Make.
+dtask needs [LDC](https://github.com/ldc-developers/ldc/releases) 1.43.0 or
+newer and GNU Make.
 
 ```sh
 git clone https://github.com/GuestAUser/dtask.git
 cd dtask
 ./install.sh
-dtask
 ```
 
-The installer builds dtask and installs it to `~/.local/bin` without sudo.
-If needed, it prints the command to add that directory to `PATH`; it does
-not modify shell profiles. Use `./install.sh --prefix PATH` to choose a
-destination or `DC=/path/to/ldc2 ./install.sh` to select a compiler.
-On FreeBSD, use `MAKE=gmake ./install.sh`; use `gmake` for the build commands
-below as well.
+The installer builds dtask and copies it to `~/.local/bin` without sudo. It
+never edits your shell profile; if that directory is not on your `PATH`, it
+prints the command to add it. Use `--prefix PATH` to install elsewhere and
+`DC=/path/to/ldc2` to choose a compiler. On FreeBSD, run
+`MAKE=gmake ./install.sh` and use `gmake` for the commands below.
 
-To run without installing:
+To build without installing, run `make` and start `./bin/dtask`.
+[DUB](https://dub.pm/) works too: `dub build --compiler=ldc2`.
 
-```sh
-make
-./bin/dtask
-```
-
-[DUB](https://dub.pm/) is also supported: `dub build --compiler=ldc2`.
-
-dtask targets Linux (including WSL), macOS, and FreeBSD. CI runs the full
-CLI, storage, and real-terminal tests on Linux x86_64, macOS arm64, and
-FreeBSD 14.4 x86_64, with both LDC 1.43.0 and the latest release on Linux
-and macOS. See the [compatibility notes](CONTRIBUTING.md#compatibility).
-
-Use a UTF-8 locale and an ANSI/VT-compatible terminal of at least
-**48 columns x 20 rows**; truecolor is recommended. Joined emoji require
-grapheme-aware terminal cell widths. Native Windows consoles are not supported.
+dtask runs on Linux (including WSL), macOS, and FreeBSD. It needs a UTF-8
+locale and an ANSI/VT-compatible terminal of at least 48 columns by 20 rows;
+truecolor is recommended, and joined emoji need a terminal with
+grapheme-aware cell widths. CI tests Linux x86_64, macOS arm64, and FreeBSD
+14.4 x86_64; see the [compatibility notes](CONTRIBUTING.md#compatibility).
+Native Windows consoles are not supported.
 
 ## Usage
 
-Press `?` for the full shortcut reference. Help supports arrow keys,
-Page Up/Down, Home/End, and mouse scrolling.
+Run `dtask` to open the workspace, and press `?` for the full shortcut
+reference.
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, arrows | Select a task |
+| `j` / `k`, arrows | Move the selection |
 | `n` | New task |
-| `e`, Enter | Edit selected task |
-| `v` | Read full title and notes |
+| `e`, Enter | Edit the selected task |
+| `v` | Read the full description |
 | Space | Complete or reopen |
 | `p` | Cycle priority |
-| `d` | Delete after confirmation |
+| `d` | Delete, after confirmation |
 | `/` | Search titles and notes |
-| `1` / `2` / `3` / `4` | Open / Today / All / Done |
-| Esc | Cancel or clear search |
-| `m` / `r` | Toggle motion / reload theme |
+| `1` `2` `3` `4` | Open, Today, All, Done |
+| `m` / `r` | Toggle effects / reload the theme |
+| Esc | Cancel, or clear the search |
 | `q`, Ctrl-C | Quit |
 
-Click a task's title to select it or its checkbox to complete it. Click its
-due date to open the calendar, or its priority to open the editor with
-Priority focused. Each wheel step over the task list moves exactly one task.
-Drag onto **Today**, **Tomorrow**, **Weekend**, **Next week**, or
-**No date** to schedule; **Calendar** selects a specific day. Esc, resizing,
-or dropping outside a target cancels the drag.
+Click a task to select it and its checkbox to complete it. Clicking a due
+date opens the calendar, and clicking a priority opens the editor on that
+field. To reschedule, drag a task onto **Today**, **Tomorrow**, **Weekend**,
+**Next week**, or **No date**; Esc, a resize, or a drop outside the targets
+cancels the drag.
 
-In the editor, Tab moves between fields. **Edit description** opens a
-multiline draft. **Back** keeps the draft, **Save** applies it, and
-**Cancel** discards it. Pasted text never runs shortcuts.
-Cursor movement and deletion keep combining accents and emoji sequences
-together, including at wrapping and clipping boundaries.
+In the editor, Tab moves between fields and **Edit description** opens a
+multiline draft. **Save** applies your changes and **Cancel** discards them.
+Pasted text is never treated as shortcuts.
 
-Dates accept `YYYY-MM-DD`, `today`, `tomorrow`, `fri`, `next monday`,
-`next week`, `weekend`, `+7d`, or `in 7 days`. Next week means the next
-Monday; weekend means the nearest Saturday. Use `none` to remove a date.
-The Today view includes overdue tasks.
+Dates accept `YYYY-MM-DD`, `today`, `tomorrow`, weekdays such as `fri` or
+`next monday`, `next week` (the next Monday), `weekend` (the nearest
+Saturday), `+7d`, and `in 7 days`. Use `none` to clear a date. The Today view
+also lists overdue tasks.
 
-Focus, drop-target, and status changes send a slow glint across their text,
-then settle; surfaces never move and input is never delayed. Effects stay
-off while editing, searching, or reading help. Press `m` to toggle them, or
-set `DTASK_REDUCED_MOTION=1` to start with them off.
+A slow glint marks focus, drop-target, and status changes, then settles. It
+never delays input and stays off while you edit, search, or read help. Press
+`m` to toggle it, or set `DTASK_REDUCED_MOTION=1` to start without it.
 
-## CLI
+## Command line
 
 ```sh
 dtask add "Prepare the release" --priority high --due tomorrow
@@ -99,38 +112,36 @@ dtask done 1
 dtask delete 1
 ```
 
-`done` is idempotent. CLI deletion is immediate; the interactive interface
-asks for confirmation. Use `--data PATH` for a separate workspace,
-`--theme PATH` for a theme, and `--help` for all options.
+`done` is idempotent, and deleting from the command line is immediate; the
+workspace asks first. Use `--data PATH` for a separate task file,
+`--theme PATH` for a theme, and `--help` for every option.
 
-## Configuration and storage
+## Configuration
 
 | File | Default location |
 | --- | --- |
 | Tasks | `~/.local/share/dtask/tasks.json` |
 | Theme | `~/.config/dtask/theme.json` |
 
-`XDG_DATA_HOME` and `XDG_CONFIG_HOME` override those base directories.
-Task changes are saved atomically. Each open store holds an exclusive lock;
-close the interface before using the CLI with the same file.
+`XDG_DATA_HOME` and `XDG_CONFIG_HOME` override the base directories. Changes
+are saved atomically, and each open task file has a single writer, so close
+the workspace before running the CLI on the same file.
 
-The default theme, Gruvbox Hard, pairs gruvbox's hard-contrast background
-with its brightest foreground and accent colors; body text keeps at least
-7.5:1 contrast. Copy [Gruvbox Hard](themes/gruvbox-hard.json),
+The default theme is [Gruvbox Hard](themes/gruvbox-hard.json). Copy it,
 [Midnight](themes/midnight.json), or [Ember](themes/ember.json) to the theme
-location, or provide partial overrides:
+location, or override only the colors you want:
 
 ```json
 {
   "name": "Custom",
-  "accent": "#C4A7E7",
-  "selected": "#2A2440"
+  "accent": "#83A598",
+  "selected": "#504945"
 }
 ```
 
-Colors use `#RRGGBB`. Press `r` to reload a loaded theme; invalid changes
-leave the current palette intact. Restart to discover a newly created
-default theme file.
+Colors use `#RRGGBB`. Press `r` to reload the theme; an invalid file keeps the
+current palette. A theme file created while dtask is running is picked up on
+the next start.
 
 ## Development
 
@@ -138,11 +149,11 @@ default theme file.
 make test
 ```
 
-Tests cover the model, storage, input decoding, rendering helpers, and real
-terminal interactions. Integration tests require Python 3.10 or newer and
-use temporary stores. See [CONTRIBUTING.md](CONTRIBUTING.md) for build options
-and code conventions.
+The suite covers the model and storage, input decoding, rendering helpers,
+and real terminal sessions. Integration tests need Python 3.10 or newer and
+use temporary task files. See [CONTRIBUTING.md](CONTRIBUTING.md) for build
+options and conventions.
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE)
