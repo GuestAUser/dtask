@@ -7,7 +7,7 @@ module dtask.motion;
 struct Motion
 {
     /** Sweep length in milliseconds: slow enough to follow, short enough to settle. */
-    enum duration = 1_200;
+    enum duration = 2_000;
     /** Presentation interval in milliseconds; duration / interval means settled. */
     enum interval = 16;
     /** Glint half-width in display cells; strength and slope reach zero at its edges. */
