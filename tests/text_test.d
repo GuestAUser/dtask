@@ -27,6 +27,29 @@ unittest
 
 unittest
 {
+    string printable;
+
+    foreach (value; 0x20 .. 0x7f)
+    {
+        const glyph = [cast(char) value].idup;
+        assert(textWidth(glyph) == 1);
+        printable ~= glyph;
+    }
+
+    assert(textWidth(printable) == 95);
+    assert(textWidth(printable ~ "\tZ") == 97);
+    assert(textWidth(printable ~ "\r\nZ") == 97);
+    assert(textWidth(printable ~ "\x00\x03\x15\x1f\x7f\u0085Z") == 96);
+    assert(textWidth(printable ~ "\x1b[31mZ\x1b[0m") == 96);
+    assert(textWidth(printable ~ "\u0301Z") == 96);
+    assert(textWidth(printable ~ "\u4e2dZ") == 98);
+    assert(textWidth(printable ~ "\U0001f469\u200d\U0001f4bbZ") == 98);
+    assert(textWidth(printable ~ "\xff" ~ "Z") == 97);
+    assert(textWidth(printable ~ "\xc2" ~ "Z") == 97);
+}
+
+unittest
+{
     assert(wrapText("one two three", 7) == ["one two", "three"]);
     assert(wrapText("one two three", 6) == ["one", "two", "three"]);
     assert(wrapText("one  two", 6) == ["one", "two"]);
@@ -137,6 +160,12 @@ unittest
     assert(previous !is null);
     scope (exit) uselocale(previous);
 
+    assert(textWidth("") == 0);
+    assert(uselocale(null) == locale);
+    assert(textWidth("plain") == 5);
+    assert(uselocale(null) == locale);
+    assert(textWidth("a\tb") == 5);
+    assert(uselocale(null) == locale);
     assert(textWidth("\u4e2de\u0301") == 3);
     assert(uselocale(null) == locale);
     assert(wrapText("\u4e2de\u0301", 2) == ["\u4e2d", "e\u0301"]);

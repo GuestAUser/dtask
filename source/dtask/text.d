@@ -231,6 +231,16 @@ private string clusterText(scope const(dchar)[] cluster)
  */
 int textWidth(string text)
 {
+    /* Printable ASCII occupies one cell per byte without locale or sanitization. */
+    size_t asciiEnd;
+
+    while (asciiEnd < text.length &&
+        text[asciiEnd] >= 0x20 && text[asciiEnd] <= 0x7e)
+        ++asciiEnd;
+
+    if (asciiEnd == text.length)
+        return cast(int) text.length;
+
     auto locale = characterLocale();
     scope (exit) freelocale(locale);
 
