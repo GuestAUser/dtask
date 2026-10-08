@@ -619,6 +619,223 @@ def selected_id(frame: bytes) -> int:
     assert match, "No selected stable task ID in the detail row"
     return int(match[1])
 
+def workspace_interaction_checks(binary: str, root: Path, captures: Path) -> None:
+    for columns, rows in [(48, 20), (120, 32)]:
+        size = f"{columns}x{rows}"
+        data = root / f"search-focus-{size}.json"
+        for title in ("match first", "match second", "other third"):
+            command(binary, data, "add", title)
+        original = data.read_bytes()
+
+        with terminal(binary, data, columns, rows) as session:
+            assert selected_id(session.send("j")) == 2
+            session.send("/")
+            assert selected_id(session.send("\x1b")) == 2
+
+            session.send("/")
+            session.send("\x1b[200~match\x1b[201~")
+            assert selected_id(session.send("\x1b[<65;20;8M")) == 2
+            for key in ("\x1b[D", "\x1b[C", "\x1b[H", "\x1b[F", "\x1b[A", "\x1b[B"):
+                frame = session.send(key)
+                assert selected_id(frame) == 2
+            captures.joinpath(f"search-highlight-{size}.ansi").write_bytes(frame)
+            frame = session.send("\r")
+            assert selected_id(frame) == 2
+            captures.joinpath(f"search-accepted-{size}.ansi").write_bytes(frame)
+            session.send("e")
+            assert session.cell("match second", min_row=9) == (13, 9)
+            session.click("[Cancel]")
+
+            # Cancellation restores both the old query and its stable focus,
+            # not the index of the replacement query's only result.
+            session.send("/")
+            session.send("\x15")
+            assert selected_id(session.send("\x1b[200~other\x1b[201~")) == 3
+            frame = session.send("\x1b")
+            assert selected_id(frame) == 2
+            assert session.cell("match", min_row=6)[1] == 6
+            captures.joinpath(f"search-restored-{size}.ansi").write_bytes(frame)
+            session.send("/")
+            assert selected_id(session.send("\x1b")) == 2
+            session.finish()
+
+        assert data.read_bytes() == original
+        data = root / f"priority-draft-{size}.json"
+        command(binary, data, "add", "Unchanged task")
+        original = data.read_bytes()
+        list_width = columns - 34 if columns >= 110 else columns
+
+        with terminal(binary, data, columns, rows) as session:
+            session.send("n")
+            session.send("\x1b[200~Priority draft\x1b[201~")
+            frame = session.send("\t")
+            assert session.cell("normal", min_row=7) == (14, 7)
+            assert b"\x1b[7;20H\x1b[?25h" in frame
+            for label in ("[low]", "[normal]", "[high]", "[urgent]"):
+                assert session.cell(label)[1] == 10
+            for label in ("[Save]", "[Cancel]", "[Pick date]"):
+                session.cell(label)
+            for label in ("Today", "Tomorrow", "Next week", "Weekend", "No date", "Calendar"):
+                x, y = session.cell(label)
+                assert 1 <= x <= columns and 1 <= y <= rows - 4
+
+            session.send("\x1b[H")
+            frame = session.send("x")
+            assert session.cell("xnormal", min_row=7) == (14, 7)
+            assert b"\x1b[7;15H\x1b[?25h" in frame
+            frame = session.send("\r")
+            assert session.cell("xnormal", min_row=7) == (14, 7)
+            assert b"\x1b[7;15H\x1b[?25h" in frame
+            assert b"Error:" in frame
+            assert data.read_bytes() == original
+            captures.joinpath(f"priority-invalid-{size}.ansi").write_bytes(frame)
+
+            # The renderer's Error: sentinel survives cursor/focus moves,
+            # ineffective deletion, and another failed Save.
+            for key in ("\x1b[H", "\x1b[D", "\x7f", "\x1b[F", "\x1b[C", "\x1b[3~", "\t", "\x1b[A"):
+                assert b"Error:" in session.send(key)
+            assert b"Error:" in session.click("[Save]")
+
+            # A long, wide draft stays within the same bounded readout.
+            assert b"Error:" not in session.send("\x15")
+            frame = session.send("\x1b[200~" + "x" * columns + "中\x1b[201~")
+            assert session.cell("中", min_row=7)[1] == 7
+            assert f"\x1b[7;{list_width - 2}H\x1b[?25h".encode() in frame
+            captures.joinpath(f"priority-bounded-{size}.ansi").write_bytes(frame)
+            session.send("\x15")
+            assert b"Error:" in session.send("\r")
+            assert b"Error:" in session.send("\x15"), "Clearing an empty field is not an edit"
+            for index, character in enumerate("high", 1):
+                frame = session.send(character)
+                assert session.cell("high"[:index], min_row=7) == (14, 7)
+                assert f"\x1b[7;{14 + index}H\x1b[?25h".encode() in frame
+                assert b"Error:" not in frame
+                if index == 2:
+                    captures.joinpath(f"priority-intermediate-{size}.ansi").write_bytes(frame)
+            captures.joinpath(f"priority-corrected-{size}.ansi").write_bytes(frame)
+            frame = session.click("[Save]")
+            assert selected_id(frame) == 2
+            assert b"\x1b[?25h" not in frame
+            stored = {task["id"]: task for task in json.loads(data.read_text())["tasks"]}
+            before = json.loads(original)["tasks"][0]
+            assert stored[1] == before
+            assert stored[2]["title"] == "Priority draft" and stored[2]["priority"] == 3
+            saved = data.read_bytes()
+
+            # A priority choice corrects a failed draft through the same status path.
+            session.send("e")
+            session.click("[high]")
+            session.send("\x1b[H")
+            session.send("x")
+            assert b"Error:" in session.send("\r")
+            frame = session.click("[high]")
+            assert session.cell("high", min_row=7) == (14, 7)
+            assert b"\x1b[7;18H\x1b[?25h" in frame
+            assert b"Error:" not in frame
+            captures.joinpath(f"priority-button-corrected-{size}.ansi").write_bytes(frame)
+            assert selected_id(session.click("[Save]")) == 2
+            assert data.read_bytes() == saved
+
+            # Each of the four buttons still replaces the complete text draft.
+            session.send("e")
+            for label in ("low", "normal", "high", "urgent"):
+                frame = session.click(f"[{label}]")
+                assert session.cell(label, min_row=7) == (14, 7)
+                assert f"\x1b[7;{14 + len(label)}H\x1b[?25h".encode() in frame
+            session.click("[Cancel]")
+            assert data.read_bytes() == saved
+            session.finish()
+
+    print("PASS: search focus/restore; bounded priority drafts/carets, keyboard/button correction clears stale errors, failed Save/non-edits retain errors, and Save/Cancel at both sizes")
+
+def description_refresh_checks(binary: str, root: Path, captures: Path) -> None:
+    def position(frame: bytes) -> tuple[int, int, int]:
+        match = re.search(rb"(\d+)-(\d+)/(\d+)", frame)
+        assert match, "No description line range"
+        return tuple(map(int, match.groups()))
+
+    notes = "FIRST_DESCRIPTION_SENTINEL\n" + "a" * 70000 + "\nEND_DESCRIPTION_SENTINEL"
+    for columns, rows in [(48, 20), (120, 32)]:
+        size = f"{columns}x{rows}"
+        data = root / f"description-refresh-{size}.json"
+        command(binary, data, "add", "First wrap task", "--notes", notes)
+        command(binary, data, "add", "Second wrap task", "--notes", "SECOND_DESCRIPTION_SENTINEL")
+        original = data.read_bytes()
+
+        with terminal(binary, data, columns, rows, reduced_motion=False) as session:
+            # Entry starts a status glint. Await emitted ticks, not time passing.
+            initial = session.send("v")
+            assert session.cell("FIRST_DESCRIPTION_SENTINEL")[1] >= 8
+            width = columns - 4
+            assert position(initial)[2] == (70000 + width - 1) // width + 5
+            ticks = [session.frame(full=False) for _ in range(3)]
+            for tick in ticks:
+                assert b"\x1b[?2026h" in tick and b"\x1b[?2026l" in tick
+                assert b"\x1b[2J" not in tick and b"\x1b[1;1H" not in tick
+                assert b"FIRST_DESCRIPTION_SENTINEL" not in tick
+            captures.joinpath(f"description-glint-{size}.ansi").write_bytes(initial + b"".join(ticks))
+
+            frame = session.send("\x1b[F")
+            assert position(frame)[1] == position(frame)[2]
+            session.cell("END_DESCRIPTION_SENTINEL")
+            resized = (120, 32) if columns == 48 else (48, 20)
+            session.resize(*resized)
+            os.kill(session.process.pid, signal.SIGWINCH)
+            frame = session.frame()
+            width = resized[0] - 4
+            assert position(frame)[2] == (70000 + width - 1) // width + 5
+            session.send("\x1b[F")
+            session.cell("END_DESCRIPTION_SENTINEL")
+            session.resize(columns, rows)
+            os.kill(session.process.pid, signal.SIGWINCH)
+            session.frame()
+            session.send("\x1b[H")
+            session.cell("FIRST_DESCRIPTION_SENTINEL")
+            session.send("\x1b")
+            assert selected_id(session.send("j")) == 2
+            frame = session.send("v")
+            session.cell("SECOND_DESCRIPTION_SENTINEL")
+            assert b"FIRST_DESCRIPTION_SENTINEL" not in frame
+            assert position(frame)[2] == 4
+            assert data.read_bytes() == original
+
+            session.send("e")
+            session.click("[Edit description]")
+            session.send("\x15")
+            edited = "EDITED_DESCRIPTION_SENTINEL\n" + "c" * 100 + "\nEND_EDITED_SENTINEL"
+            session.send("\x1b[200~" + edited + "\x1b[201~")
+            assert data.read_bytes() == original
+            assert selected_id(session.click("[Save]")) == 2
+            frame = session.send("v")
+            session.cell("EDITED_DESCRIPTION_SENTINEL")
+            assert b"SECOND_DESCRIPTION_SENTINEL" not in frame
+            session.send("\x1b[F")
+            session.cell("END_EDITED_SENTINEL")
+            captures.joinpath(f"description-fresh-{size}.ansi").write_bytes(session.frames[-1])
+
+            saved = data.read_bytes()
+            session.send("e")
+            session.click("[Edit description]")
+            session.send("\x15")
+            session.send("\x1b[200~DISCARDED_DESCRIPTION_SENTINEL\x1b[201~")
+            session.click("[Cancel]")
+            frame = session.send("v")
+            session.cell("EDITED_DESCRIPTION_SENTINEL")
+            assert b"DISCARDED_DESCRIPTION_SENTINEL" not in frame
+            assert data.read_bytes() == saved
+            session.send("\x1b")
+            assert selected_id(session.send("k")) == 1
+            session.send("v")
+            session.cell("FIRST_DESCRIPTION_SENTINEL")
+            session.send("\x1b")
+            session.finish()
+
+        stored = {task["id"]: task for task in json.loads(data.read_text())["tasks"]}
+        before = {task["id"]: task for task in json.loads(original)["tasks"]}
+        assert stored[1] == before[1] and stored[2] == {**before[2], "notes": edited}
+
+    print("PASS: large-description glint frames and fresh wrapping after selection, reader, width/resize, saved edit and cancelled draft at both sizes")
+
 def buffered_paste_tail_checks(binary: str, root: Path, captures: Path) -> None:
     for columns, rows in [(48, 20), (120, 32)]:
         data = root / f"buffered-paste-tail-{columns}.json"
@@ -1398,11 +1615,13 @@ def main() -> None:
         theme_checks(binary, root, captures)
         navigation_checks(binary, root, captures)
         scheduling_checks(binary, root, captures)
+        workspace_interaction_checks(binary, root, captures)
         direct_field_checks(binary, root, captures)
         wheel_precision_checks(binary, root, captures)
         buffered_paste_tail_checks(binary, root, captures)
         calendar_checks(binary, root, captures)
         description_checks(binary, root, captures)
+        description_refresh_checks(binary, root, captures)
         cursor_boundary_checks(binary, root)
         caret_rendering_checks(binary, root, captures)
         grapheme_editing_checks(binary, root, captures)

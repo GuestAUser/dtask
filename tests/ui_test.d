@@ -1,8 +1,78 @@
-module ui_test;
+module dtask.ui_test;
 
+import dtask.model : Task;
+import dtask.motion : Motion;
+import dtask.ui : DescriptionWrap;
 import dtask.widgets;
 import std.datetime : Date;
 import dtask.text : graphemeBoundaries, textWidth;
+
+unittest
+{
+    import std.array : replicate;
+    import std.stdio : writeln;
+
+    Task task;
+    task.title = "Wrap reuse";
+    task.notes = "a".replicate(70_000);
+
+    foreach (width; [44, 82, 116])
+    {
+        DescriptionWrap description;
+        description.beginFrame(true);
+        auto original = description.lines(&task, width);
+        assert(original.length == 3 + (70_000 + width - 1) / width);
+        assert(description.computations == 1);
+
+        foreach (tick; 0 .. Motion.duration / Motion.interval + 1)
+        {
+            description.beginFrame(false);
+            assert(description.lines(&task, width).ptr == original.ptr);
+            assert(description.computations == 1);
+        }
+
+        /* Full input recomputes even when the task and width are unchanged. */
+        description.beginFrame(true);
+        auto acknowledged = description.lines(&task, width);
+        assert(acknowledged == original && acknowledged.ptr != original.ptr);
+        assert(description.computations == 2);
+
+        /* A new body width also recomputes on an otherwise visual-only frame. */
+        description.beginFrame(false);
+        auto resized = description.lines(&task, width + 1);
+        assert(resized.length == 3 + (70_000 + width) / (width + 1));
+        assert(resized.ptr != acknowledged.ptr);
+        assert(description.computations == 3);
+
+        writeln("Description wrap width=", width, ": 126 visual frames, 1 initial computation; input and width each recomputed");
+    }
+
+    DescriptionWrap description;
+    Task next;
+    next.title = "Second task";
+    next.notes = "SECOND_SENTINEL";
+    description.beginFrame(true);
+    description.lines(&task, 44);
+    description.beginFrame(true);
+    assert(description.lines(&next, 44) == [next.title, "", "DESCRIPTION", next.notes]);
+
+    next.notes = "EDITED_SENTINEL";
+    description.beginFrame(true);
+    assert(description.lines(&next, 44)[$ - 1] == next.notes);
+
+    /* An editor/hidden-description frame must discard the previous result. */
+    description.beginFrame(true);
+    next.notes = "AFTER_EDITOR_SENTINEL";
+    description.beginFrame(false);
+    assert(description.lines(&next, 44)[$ - 1] == next.notes);
+    assert(description.computations == 4);
+
+    description.beginFrame(true);
+    assert(description.lines(null, 44).length == 1);
+    next.notes = "";
+    description.beginFrame(true);
+    assert(description.lines(&next, 44).length > 3);
+}
 
 unittest
 {

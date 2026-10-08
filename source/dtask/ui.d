@@ -23,6 +23,40 @@ private static immutable fieldLabels = ["Title", "Priority", "Due date", "Notes"
 private static immutable priorityLabels = ["low", "normal", "high", "urgent"];
 
 /*
+ * Keep only the displayed description's wrapping. Input frames discard it,
+ * while visual-only frames reuse it unless the body's width has changed.
+ */
+package struct DescriptionWrap
+{
+    private string[] wrapped;
+    private int width;
+
+    version (unittest) size_t computations;
+
+    void beginFrame(bool full)
+    {
+        if (full)
+            wrapped = null;
+    }
+
+    string[] lines(const Task* task, int requestedWidth)
+    {
+        if (wrapped is null || width != requestedWidth)
+        {
+            wrapped = task is null ? ["No task selected."]
+                : wrapText(task.title, requestedWidth) ~ ["", "DESCRIPTION"]
+                    ~ wrapText(task.notes.length ? task.notes
+                        : "No description yet. Click Edit to add one.", requestedWidth);
+            width = requestedWidth;
+
+            version (unittest) ++computations;
+        }
+
+        return wrapped;
+    }
+}
+
+/*
  * A click target registered by the frame that drew it. Drawing and hit testing
  * share one rectangle, so a moved or renamed control can never lose its action.
  */
@@ -63,6 +97,7 @@ private final class Workspace
     string filter = "open";
     string query;
     string previousQuery;
+    ulong previousSearchId;
     string status = "Drag a task onto a date to schedule it.";
     size_t[] visible;
     int selected;
@@ -83,6 +118,7 @@ private final class Workspace
     int helpLength;
     ulong descriptionId;
     int descriptionOffset;
+    DescriptionWrap descriptionWrap;
     int draftOffset;
     bool followDraftCursor = true;
     int caretX;
@@ -156,10 +192,16 @@ private final class Workspace
             const oldStatus = status;
             const oldTarget = dropTarget;
             const oldFilter = filter;
+            const oldFields = fields;
 
             try
             {
                 handle(event);
+
+                /* A failed Save describes the old draft, not its next revision. */
+                if ((mode == Mode.edit || mode == Mode.descriptionEdit)
+                    && fields != oldFields && status.startsWith("Error:"))
+                    status = "Editing a draft. Save applies; Esc cancels.";
             }
             catch (Exception error)
             {
@@ -370,6 +412,8 @@ private final class Workspace
             frame ~= "\x1b[2J";
             full = true;
         }
+
+        descriptionWrap.beginFrame(full);
 
         if (columns < 48 || rows < 20)
         {
@@ -691,13 +735,7 @@ private final class Workspace
 
     string[] descriptionLines(int width)
     {
-        auto task = current();
-
-        if (task is null)
-            return ["No task selected."];
-
-        return wrapText(task.title, width) ~ ["", "DESCRIPTION"]
-            ~ wrapText(task.notes.length ? task.notes : "No description yet. Click Edit to add one.", width);
+        return descriptionWrap.lines(current(), width);
     }
 
     void scrollDescription(int amount, bool absolute = false)
@@ -945,6 +983,17 @@ private final class Workspace
     void renderForm(ref string frame)
     {
         auto width = listWidth;
+
+        if (field == 1)
+        {
+            int cursorColumn;
+            auto text = editable(fields[1], cursors[1], width - 15, cursorColumn);
+            at(frame, 3, 7, "Priority > ", 11, theme.accent);
+            at(frame, 14, 7, text, width - 15, theme.foreground, theme.selected);
+            caretX = 14 + cursorColumn;
+            caretY = 7;
+        }
+
         at(frame, 3, 8, editing ? "EDIT TASK" : "NEW TASK", width - 4, theme.accent);
 
         foreach (index, label; fieldLabels)
@@ -1175,6 +1224,7 @@ private final class Workspace
             return;
 
         previousQuery = query;
+        previousSearchId = currentId();
         searchCursor = to!dstring(query).length;
         mode = Mode.search;
     }
@@ -1545,13 +1595,19 @@ private final class Workspace
             {
                 query = previousQuery;
                 mode = Mode.browse;
+                refresh(previousSearchId);
             }
             else if (event.key == Key.enter)
                 mode = Mode.browse;
             else
+            {
+                const oldQuery = query;
                 editText(query, searchCursor, event, 1024);
 
-            selected = 0;
+                if (query != oldQuery)
+                    selected = 0;
+            }
+
             return;
         }
 
