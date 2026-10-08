@@ -7,6 +7,10 @@ on:
         description: Existing release tag
         required: true
         type: string
+      freebsd_only:
+        description: Build only the FreeBSD archive
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -35,6 +39,7 @@ jobs:
 
   posix:
     needs: prepare
+    if: ${{ !inputs.freebsd_only }}
     strategy:
       fail-fast: false
       matrix:
@@ -109,7 +114,7 @@ jobs:
           mkdir -p /usr/local/etc/pkg/repos
           printf '%s\n' 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }' \
             > /usr/local/etc/pkg/repos/FreeBSD.conf
-          pkg install -y ldc gmake python3
+          pkg install -y ldc gmake python3 git
           gmake DC=ldc2
           strip bin/dtask
           file bin/dtask
