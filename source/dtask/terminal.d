@@ -643,6 +643,9 @@ final class Terminal
 {
     private bool open;
     private InputTiming input;
+    private ubyte[4096] inputBytes;
+    private size_t inputOffset;
+    private size_t inputLength;
     private int lastColumns;
     private int lastRows;
 
@@ -752,6 +755,8 @@ final class Terminal
      * The nonnegative render budget is capped at 100 ms for resize responsiveness.
      * A lone Escape keeps its separate 35 ms grace period across calls. Partial
      * UTF-8, control sequences and paste survive render deadlines unchanged.
+     * Chunk reads retain unread bytes across events, deadlines and size changes;
+     * each call returns at most one decoded event without coalescing input.
      * EOF, hangup or decoded Ctrl-C closes the terminal and returns Key.interrupt.
      * Throws if closed or terminal I/O fails. Resize events carry no size payload.
      */
@@ -761,62 +766,73 @@ final class Terminal
         enforce(waitMilliseconds >= 0, "Terminal wait must be nonnegative");
 
         input.beginWait(waitMilliseconds < 100 ? waitMilliseconds : 100, MonoTime.currTime);
-        bool attemptedPoll;
+        bool attemptedInput;
 
         for (;;)
         {
-            int columns, rows;
-            size(columns, rows);
-            if (columns != lastColumns || rows != lastRows)
+            /* Query dimensions at call/refill boundaries, not for every byte. */
+            if (!attemptedInput || inputOffset == inputLength)
             {
-                lastColumns = columns;
-                lastRows = rows;
-                return Event(Key.resize);
+                int columns, rows;
+                size(columns, rows);
+                if (columns != lastColumns || rows != lastRows)
+                {
+                    lastColumns = columns;
+                    lastRows = rows;
+                    return Event(Key.resize);
+                }
             }
 
             const now = MonoTime.currTime;
-            if (attemptedPoll && input.renderDue(now))
+            if (attemptedInput && input.renderDue(now))
                 return input.expireEscape(now);
 
-            pollfd descriptor;
-            descriptor.fd = 0;
-            descriptor.events = POLLIN;
-            const ready = poll(&descriptor, 1, input.waitMillis(now));
-            attemptedPoll = true;
-            if (ready < 0 && errno == EINTR)
-                continue;
-
-            enforce(ready >= 0, "Cannot poll terminal input");
-            if (ready == 0)
+            if (inputOffset == inputLength)
             {
-                const afterPoll = MonoTime.currTime;
-                auto event = input.expireEscape(afterPoll);
-                if (event.key != Key.none || input.renderDue(afterPoll))
-                    return event;
+                pollfd descriptor;
+                descriptor.fd = 0;
+                descriptor.events = POLLIN;
+                const ready = poll(&descriptor, 1, input.waitMillis(now));
+                attemptedInput = true;
+                if (ready < 0 && errno == EINTR)
+                    continue;
 
-                continue;
+                enforce(ready >= 0, "Cannot poll terminal input");
+                if (ready == 0)
+                {
+                    const afterPoll = MonoTime.currTime;
+                    auto event = input.expireEscape(afterPoll);
+                    if (event.key != Key.none || input.renderDue(afterPoll))
+                        return event;
+
+                    continue;
+                }
+
+                enforce(!(descriptor.revents & (POLLERR | POLLNVAL)), "Terminal input failed");
+                if (!(descriptor.revents & POLLIN) && (descriptor.revents & POLLHUP))
+                {
+                    close();
+                    return Event(Key.interrupt);
+                }
+
+                auto count = read(0, inputBytes.ptr, inputBytes.length);
+                if (count < 0 && errno == EINTR)
+                    continue;
+
+                enforce(count >= 0, "Cannot read terminal input");
+                if (count == 0)
+                {
+                    close();
+                    return Event(Key.interrupt);
+                }
+
+                inputOffset = 0;
+                inputLength = cast(size_t) count;
             }
 
-            enforce(!(descriptor.revents & (POLLERR | POLLNVAL)), "Terminal input failed");
-            if (!(descriptor.revents & POLLIN) && (descriptor.revents & POLLHUP))
-            {
-                close();
-                return Event(Key.interrupt);
-            }
-
-            ubyte value;
-            auto count = read(0, &value, 1);
-            if (count < 0 && errno == EINTR)
-                continue;
-
-            enforce(count >= 0, "Cannot read terminal input");
-            if (count == 0)
-            {
-                close();
-                return Event(Key.interrupt);
-            }
-
-            auto event = input.feed(value, MonoTime.currTime);
+            /* Even a zero budget attempts one byte; busy input cannot defer rendering. */
+            auto event = input.feed(inputBytes[inputOffset++], MonoTime.currTime);
+            attemptedInput = true;
             if (event.key == Key.interrupt)
                 close();
             if (event.key != Key.none)

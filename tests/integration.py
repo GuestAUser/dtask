@@ -619,6 +619,41 @@ def selected_id(frame: bytes) -> int:
     assert match, "No selected stable task ID in the detail row"
     return int(match[1])
 
+def buffered_paste_tail_checks(binary: str, root: Path, captures: Path) -> None:
+    for columns, rows in [(48, 20), (120, 32)]:
+        data = root / f"buffered-paste-tail-{columns}.json"
+        command(binary, data, "add", "Buffered task", "--notes", "Original notes")
+        original = data.read_bytes()
+
+        with terminal(binary, data, columns, rows) as session:
+            session.send("e")
+            session.click("[Edit description]")
+            session.send("\x15")
+
+            # One write crosses from paste decoding to ordinary editing and
+            # a mode change. Await every acknowledgment without more input.
+            burst = "\x1b[200~buffer中\r\nq\x1b[201~\x1b[D!\t".encode()
+            assert os.write(session.master, burst) == len(burst)
+            frames = []
+            for column, text in ((4, "q"), (3, "q"), (4, "!q")):
+                frame = session.frame()
+                assert f"\x1b[9;{column}H\x1b[?25h".encode() in frame
+                assert session.cell("buffer中") == (3, 8)
+                assert session.cell(text, min_row=9) == (3, 9)
+                frames.append(frame)
+            frame = session.frame()
+            assert session.cell("[Edit description]") == (13, 12)
+            assert b"\x1b[?25h" not in frame
+            assert data.read_bytes() == original
+            captures.joinpath(f"buffered-paste-tail-{columns}x{rows}.ansi").write_bytes(b"".join(frames) + frame)
+            session.click("[Save]")
+            session.finish()
+
+        stored = json.loads(data.read_text())["tasks"][0]
+        assert stored == {**json.loads(original)["tasks"][0], "notes": "buffer中\n!q"}
+
+    print("PASS: one-write paste/edit/mode-change tail yields every ordered frame and the exact saved draft at both sizes")
+
 def direct_field_checks(binary: str, root: Path, captures: Path) -> None:
     for columns, rows in [(48, 20), (120, 32)]:
         data = root / f"direct-fields-{columns}.json"
@@ -1365,6 +1400,7 @@ def main() -> None:
         scheduling_checks(binary, root, captures)
         direct_field_checks(binary, root, captures)
         wheel_precision_checks(binary, root, captures)
+        buffered_paste_tail_checks(binary, root, captures)
         calendar_checks(binary, root, captures)
         description_checks(binary, root, captures)
         cursor_boundary_checks(binary, root)

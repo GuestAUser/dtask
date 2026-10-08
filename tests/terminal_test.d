@@ -496,3 +496,81 @@ version (TerminalProbe)
         }
     }
 }
+
+/*
+ * An EOF probe additionally uses -d-version=TerminalEOFProbe -L=--wrap=read.
+ * Only the terminal's read result is injected; its poll, buffering, raw-mode
+ * ownership and cleanup still operate on the real PTY. Budget 254 arms EOF.
+ */
+version (TerminalEOFProbe)
+{
+    import core.sys.posix.sys.types : ssize_t;
+
+    private __gshared bool inputEOF;
+    private extern (C) ssize_t __real_read(int descriptor, void* bytes, size_t length) nothrow @nogc;
+
+    extern (C) ssize_t __wrap_read(int descriptor, void* bytes, size_t length) nothrow @nogc
+    {
+        if (descriptor == 0 && inputEOF)
+            return 0;
+
+        return __real_read(descriptor, bytes, length);
+    }
+}
+
+/*
+ * Build with -d-version=TerminalBufferProbe (without tests/runner.d). An inherited
+ * pipe supplies each readEvent budget as one byte, or 255 to close. READY and
+ * newline-delimited JSON events let a PTY driver advance without timing sleeps,
+ * inspect an exhausted input descriptor, and resize between buffered events.
+ */
+version (TerminalBufferProbe)
+{
+    int main(string[] arguments)
+    {
+        import core.sys.posix.unistd : read;
+        import std.conv : to;
+        import std.exception : enforce;
+        import std.json : JSONValue;
+        import std.stdio : stdout;
+
+        const control = to!int(arguments[1]);
+        auto terminal = new Terminal;
+        scope (exit) terminal.close();
+        terminal.write("READY\n");
+
+        for (;;)
+        {
+            ubyte budget;
+            enforce(read(control, &budget, 1) == 1, "Cannot read probe budget");
+            if (budget == 255)
+                return 0;
+
+            version (TerminalEOFProbe)
+            {
+                if (budget == 254)
+                {
+                    inputEOF = true;
+                    budget = 100;
+                }
+            }
+
+            auto event = terminal.readEvent(budget);
+            auto result = JSONValue([
+                "key": JSONValue(to!string(event.key)),
+                "text": JSONValue(event.text),
+                "pasted": JSONValue(event.pasted),
+                "x": JSONValue(event.x),
+                "y": JSONValue(event.y),
+                "button": JSONValue(event.button),
+                "release": JSONValue(event.release),
+                "motion": JSONValue(event.motion)
+            ]);
+
+            stdout.writeln(result.toString());
+            stdout.flush();
+            if (event.key == Key.interrupt)
+                return 0;
+        }
+    }
+}
