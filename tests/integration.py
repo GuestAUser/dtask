@@ -251,6 +251,156 @@ def cli_option_checks(binary: str, root: Path) -> None:
     assert json.loads(result.stdout) == tasks
     print("PASS: literal option values, independent help/version and explicit paths without HOME")
 
+def diagnostic_checks(binary: str, root: Path) -> None:
+    data = root / "diagnostic-data.json"
+    theme = root / "diagnostic-theme.json"
+    theme.write_text("{}", encoding="utf-8")
+    title = "Literal 'title' 日本語"
+    notes = "Keep Unicode é 👩‍💻, a tab\tand a newline\nunchanged"
+    command(binary, data, "--theme", str(theme), "add", title, "--notes", notes)
+    before = data.read_bytes()
+    json_before = command(binary, data, "--theme", str(theme), "list", "--json").stdout
+    task = json.loads(json_before)[0]
+    assert task["title"] == title and task["notes"] == notes
+
+    def inert(result: subprocess.CompletedProcess[bytes]) -> None:
+        for output in (result.stdout, result.stderr):
+            text = output.decode("utf-8")
+            assert all(
+                character == "\n" or (ord(character) >= 0x20 and not 0x7f <= ord(character) <= 0x9f)
+                for character in text
+            ), (result.args, result.returncode, output)
+
+    def reject_cli(path: Path, *arguments: str | bytes) -> None:
+        result = subprocess.run(
+            [binary, "--data", str(path), "--theme", str(theme), *arguments],
+            capture_output=True, timeout=10, check=False,
+        )
+        assert result.returncode != 0 and not result.stdout and result.stderr, result
+        inert(result)
+        assert result.stderr.count(b"\n") == 1, result.stderr
+
+    payloads = (
+        "\x1b[2J", "\x1b]0;hostile title\x07", "\x1b]52;c;YQ==\x1b\\",
+        "\x1bPopaque control string\x1b\\", "\x1b]unterminated",
+        "\r", "\n", "\t", "\x07\x08\x0b\x0c\x1f\x7f",
+        "\u009b2J", "\u009d0;hostile title\u009c",
+    )
+
+    for payload in payloads:
+        reject_cli(data, "--" + payload)
+        reject_cli(data, "unrecognized" + payload)
+        reject_cli(data, "--priority", "invalid" + payload, "list")
+        reject_cli(data, "--due", "invalid" + payload, "list")
+
+    for argument in (b"--\x9b2J", b"--\x9d0;raw title\x9c", b"--\xff"):
+        reject_cli(data, argument)
+
+    for index, payload in enumerate((*payloads, "\x00")):
+        malformed_theme = root / f"diagnostic-theme-{index}.json"
+        malformed_theme.write_text(json.dumps({payload: "#123456"}), encoding="utf-8")
+        original = malformed_theme.read_bytes()
+        reject_cli(data, "--theme", str(malformed_theme), "list")
+        assert malformed_theme.read_bytes() == original
+
+        malformed_store = root / f"diagnostic-store-{index}.json"
+        malformed_store.write_text(json.dumps({"version": 1, payload: []}), encoding="utf-8")
+        original = malformed_store.read_bytes()
+        reject_cli(malformed_store, "add", "Must not overwrite")
+        assert malformed_store.read_bytes() == original
+
+    for index, payload in enumerate(payloads):
+        malformed_theme = root / f"diagnostic-path-{index}-{payload}.json"
+        malformed_theme.write_text("[null]", encoding="utf-8")
+        reject_cli(data, "--theme", str(malformed_theme), "list")
+        assert malformed_theme.read_bytes() == b"[null]"
+
+    assert data.read_bytes() == before
+    assert command(binary, data, "--theme", str(theme), "list", "--json").stdout == json_before
+
+    installer = Path(__file__).resolve().parents[1] / "install.sh"
+    make_stub = root / "diagnostic-make"
+    make_log = root / "diagnostic-make-arguments"
+    make_stub.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$DTASK_MAKE_ARGUMENTS"\n'
+        'exit "$DTASK_MAKE_STATUS"\n', encoding="utf-8",
+    )
+    make_stub.chmod(0o755)
+    environment = {
+        **os.environ, "HOME": str(root / "unused-home"),
+        "PREFIX": str(root / "not-installed"), "DESTDIR": "", "DC": "true",
+        "BIN_DIR": str(root / "unused-build"), "MAKE": str(make_stub),
+        "DTASK_MAKE_ARGUMENTS": str(make_log), "DTASK_MAKE_STATUS": "1",
+        "LC_ALL": "C",
+    }
+
+    def reject_installer(
+        *arguments: str, overrides: dict[str, str] | None = None, expect_make: bool = False,
+    ) -> None:
+        make_log.unlink(missing_ok=True)
+        result = subprocess.run(
+            ["sh", str(installer), *arguments], cwd=root,
+            env={**environment, **(overrides or {})},
+            capture_output=True, timeout=10, check=False,
+        )
+        assert result.returncode != 0 and not result.stdout and result.stderr, result
+        inert(result)
+        assert result.stderr.count(b"\n") == 1, result.stderr
+        assert make_log.exists() == expect_make, (arguments, overrides, result)
+
+    path_payloads = (
+        *payloads, *(chr(value) for value in range(1, 32)), "\x7f",
+        os.fsdecode(b"\x9b2J"), os.fsdecode(b"\x9d0;raw title\x9c"),
+    )
+
+    for payload in path_payloads:
+        unsafe = str(root / ("unsafe-" + payload))
+        reject_installer("--" + payload)
+        reject_installer("--prefix", unsafe)
+        reject_installer(overrides={"PREFIX": unsafe})
+        reject_installer(overrides={"DESTDIR": unsafe})
+
+    for variable in ("MAKE", "DC", "BIN_DIR"):
+        reject_installer(overrides={variable: str(root / "missing-\x1b[2J\r")})
+
+    failed_make = root / "diagnostic-make-\x1b[2J\r"
+    failed_make.symlink_to(make_stub)
+    reject_installer(overrides={"MAKE": str(failed_make)}, expect_make=True)
+
+    # A successful stub exercises argument passing and the actual printed shell
+    # commands without building, installing, or creating destination directories.
+    prefix = str(root / "not installed é 日本語 👩‍💻 with 'apostrophes'; (inert)")
+    staging = str(root / "staging root's é")
+    result = subprocess.run(
+        ["sh", str(installer), "--prefix", prefix], cwd=root,
+        env={**environment, "DESTDIR": staging, "DTASK_MAKE_STATUS": "0"},
+        capture_output=True, timeout=10, check=False,
+    )
+    assert result.returncode == 0 and not result.stderr, result
+    inert(result)
+    assert make_log.read_text(encoding="utf-8").splitlines() == [
+        "install", "DC=true", "PREFIX=" + prefix, "DESTDIR=" + staging,
+        "BIN_DIR=" + environment["BIN_DIR"],
+    ]
+    installed_bin = staging + prefix + "/bin"
+    assert not Path(installed_bin).exists()
+    lines = result.stdout.decode("utf-8").splitlines()
+    launch = next(line.removeprefix("Launch: ") for line in lines if line.startswith("Launch: "))
+    quoted = subprocess.run(
+        ["sh", "-c", "set -- " + launch + '; printf "%s\\n" "$#" "$1"'],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert quoted.returncode == 0 and not quoted.stderr, quoted
+    assert quoted.stdout.splitlines() == ["1", installed_bin + "/dtask"]
+    export = next(line[line.index("export PATH="):] for line in lines if "export PATH=" in line)
+    exported = subprocess.run(
+        ["sh", "-c", export + '; printf "%s" "$PATH"'], env=environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert exported.returncode == 0 and not exported.stderr, exported
+    assert exported.stdout == installed_bin + ":" + environment.get("PATH", "")
+    print("PASS: inert CLI/config/installer diagnostics, unchanged JSON and malformed files, pre-make path rejection and shell quoting")
+
 def tui_checks(binary: str, root: Path, captures: Path) -> None:
     data = root / "tui.json"
 
@@ -1207,6 +1357,7 @@ def main() -> None:
         captures.mkdir(parents=True, exist_ok=True)
         cli_checks(binary, root)
         cli_option_checks(binary, root)
+        diagnostic_checks(binary, root)
         tui_checks(binary, root, captures)
         mouse_checks(binary, root, captures)
         theme_checks(binary, root, captures)

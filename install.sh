@@ -3,7 +3,8 @@
 set -eu
 
 fail() {
-    printf 'install.sh: %s\n' "$*" >&2
+    diagnostic=$(printf '%s' "$*" | LC_ALL=C tr -c '[:print:]' '?')
+    printf 'install.sh: %s\n' "$diagnostic" >&2
     exit 1
 }
 
@@ -20,7 +21,7 @@ usage() {
         'DC must be a single command/path; DC and BIN_DIR cannot contain spaces' \
         'or shell/make metacharacters because of the existing Makefile.' \
         'Installation paths support spaces, but not double quotes, backslashes,' \
-        'dollar signs, backticks, or newlines.'
+        'dollar signs, backticks, or terminal control characters.'
 }
 
 # Print a shell-safe command argument, including paths containing apostrophes.
@@ -31,7 +32,7 @@ shell_quote() {
     while :; do
         case $quote_rest in
             *"'"*)
-                printf "%s'\\''" "${quote_rest%%\'*}"
+                printf '%s%s' "${quote_rest%%\'*}" "'\\''"
                 quote_rest=${quote_rest#*\'}
                 ;;
             *)
@@ -87,11 +88,25 @@ esac
 
 # These values enter Makefile recipes. Quoting make's argv alone does not
 # protect against make expansion or shell syntax embedded in recipe values.
+# Ignore well-formed non-control UTF-8 before checking raw C0/C1 bytes. This
+# preserves Unicode paths even in the C locale without admitting encoded C1.
+utf8_printable=$(printf '%b' \
+    '\0302[\0240-\0277]|[\0303-\0337][\0200-\0277]|' \
+    '\0340[\0240-\0277][\0200-\0277]|[\0341-\0354\0356-\0357][\0200-\0277]{2}|' \
+    '\0355[\0200-\0237][\0200-\0277]|\0360[\0220-\0277][\0200-\0277]{2}|' \
+    '[\0361-\0363][\0200-\0277]{3}|\0364[\0200-\0217][\0200-\0277]{2}')
+terminal_controls=$(printf '[\001-\011\013-\037\177-\237]')
+
 for path in "$prefix" "$destdir"; do
     case $path in
         *'"'*|*\\*|*'$'*|*'`'*|*'
 '*) fail 'installation paths contain unsupported shell/make characters' ;;
     esac
+
+    if printf '%s' "$path" | LC_ALL=C sed -E "s/$utf8_printable//g" |
+        LC_ALL=C grep -q "$terminal_controls"; then
+        fail 'installation paths contain terminal control characters'
+    fi
 done
 
 for value in "$dc" "$bin_dir"; do

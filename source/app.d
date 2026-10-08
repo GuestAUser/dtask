@@ -1,6 +1,7 @@
 module app;
 
 import dtask.model;
+import dtask.text : fitText;
 import dtask.theme;
 import dtask.ui;
 import std.conv : to;
@@ -8,6 +9,7 @@ import std.exception : enforce;
 import std.file : exists;
 import std.json : JSONValue;
 import std.stdio : stderr, writeln;
+import std.string : stripRight;
 
 /**
  * Dispatch CLI commands, or open the interactive workspace when no command is given.
@@ -189,7 +191,8 @@ int main(string[] args)
     }
     catch (Exception error)
     {
-        stderr.writeln("dtask: ", error.msg);
+        /* UTF-8 byte length bounds the sanitized line's cells; discard fitter padding. */
+        stderr.writeln("dtask: ", stripRight(fitText(error.msg, cast(int) error.msg.length)));
         return 1;
     }
 }
