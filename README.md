@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  A keyboard- and mouse-driven task manager for the terminal.
+  A terminal task manager with keyboard and mouse controls.
 </p>
 
 <p align="center">
@@ -26,8 +26,8 @@ account, service, or runtime to install.
   and drafts are saved only when you choose.
 - **Search and views.** Search titles and notes, and switch between the Open,
   Today, All, and Done views.
-- **Themes.** A high-contrast Gruvbox theme by default, custom palettes in
-  JSON, and live reload.
+- **Themes.** Choose a built-in palette or configure your own in JSON, with
+  live reload.
 - **Safe storage.** Atomic saves, a single-writer lock, and editing that keeps
   accents, emoji, and CJK text intact.
 
