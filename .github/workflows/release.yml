@@ -115,6 +115,7 @@ jobs:
           printf '%s\n' 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }' \
             > /usr/local/etc/pkg/repos/FreeBSD.conf
           pkg install -y ldc gmake python3 git
+          git config --global --add safe.directory "$PWD"
           gmake DC=ldc2
           strip bin/dtask
           file bin/dtask
