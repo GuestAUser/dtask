@@ -38,6 +38,27 @@ account, service, or runtime to install.
 
 ## Installation
 
+### Prebuilt binaries
+
+Download the archive for your system from [Releases](https://github.com/GuestAUser/dtask/releases/latest):
+Linux x86_64, macOS Apple Silicon, or FreeBSD x86_64. Each archive contains
+the executable, license, and example themes. Check the release notes for OS
+requirements and verify your download against `SHA256SUMS`.
+
+For example, on Linux:
+
+```sh
+tar -xzf dtask-v1.0.0-linux-x86_64.tar.gz
+mkdir -p ~/.local/bin
+install -m 755 dtask-v1.0.0-linux-x86_64/dtask ~/.local/bin/dtask
+dtask
+```
+
+Use the matching archive and extracted directory on macOS or FreeBSD.
+Add `~/.local/bin` to your `PATH` if needed. No compiler is required.
+
+### From source
+
 dtask needs [LDC](https://github.com/ldc-developers/ldc/releases) 1.43.0 or
 newer and GNU Make.
 

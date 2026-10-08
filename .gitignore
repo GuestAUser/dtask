@@ -1,4 +1,5 @@
 /bin/
+/dist/
 /.dub/
 /dub.selections.json
 __pycache__/

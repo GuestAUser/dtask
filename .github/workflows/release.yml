@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Verify draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq .object.sha
+
+  posix:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x86_64
+          - os: macos-15
+            target: macos-arm64
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-1.43.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build and verify the release executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            export MACOSX_DEPLOYMENT_TARGET=15.0
+          fi
+          make DC=ldc2
+          strip bin/dtask
+          if [ "$RUNNER_OS" = macOS ]; then
+            codesign --force --sign - bin/dtask
+            codesign --verify --strict bin/dtask
+            otool -L bin/dtask
+            vtool -show-build bin/dtask
+          else
+            ldd bin/dtask
+          fi
+          file bin/dtask
+          make test DC=ldc2
+      - name: Package
+        run: python3 scripts/package-release.py "$RELEASE_TAG" "${{ matrix.target }}"
+      - name: Upload release archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$RELEASE_TAG" "dist/dtask-$RELEASE_TAG-${{ matrix.target }}.tar.gz"
+
+  freebsd:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Start FreeBSD 14.4 x86_64
+        uses: vmactions/freebsd-vm@v1.5.9
+        with:
+          release: "14.4"
+          arch: x86_64
+          envs: RELEASE_TAG
+          sync: rsync
+          copyback: true
+      - name: Build, verify and package
+        shell: freebsd {0}
+        run: |
+          set -eu
+          mkdir -p /usr/local/etc/pkg/repos
+          printf '%s\n' 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }' \
+            > /usr/local/etc/pkg/repos/FreeBSD.conf
+          pkg install -y ldc gmake python3
+          gmake DC=ldc2
+          strip bin/dtask
+          file bin/dtask
+          ldd bin/dtask
+          gmake test DC=ldc2
+          python3 scripts/package-release.py "$RELEASE_TAG" freebsd-x86_64
+      - name: Upload release archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$RELEASE_TAG" "dist/dtask-$RELEASE_TAG-freebsd-x86_64.tar.gz"
